@@ -1,0 +1,31 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-06-09 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "description": "Per-user read marker for Kavach Notification rows (Global/System Dev notifications are shared, so read-state can't live on the notification itself). One row per (user, notification). Unread = visible notifications with no matching Seen row.",
+ "field_order": ["user", "kavach_notification", "seen_at"],
+ "fields": [
+  {"fieldname": "user", "fieldtype": "Link", "options": "User", "label": "User", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "kavach_notification", "fieldtype": "Link", "options": "Kavach Notification", "label": "Kavach Notification", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "seen_at", "fieldtype": "Datetime", "label": "Seen At", "read_only": 1}
+ ],
+ "links": [],
+ "modified": "2026-06-09 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Stock Reconciliation Tracking",
+ "name": "Kavach Notification Seen",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "read": 1, "write": 1, "role": "System Manager"},
+  {"create": 1, "read": 1, "write": 1, "role": "Srt User", "if_owner": 1},
+  {"create": 1, "read": 1, "write": 1, "role": "Srt Admin", "if_owner": 1},
+  {"create": 1, "read": 1, "write": 1, "role": "Srt Super Admin", "if_owner": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

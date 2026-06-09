@@ -1,0 +1,14 @@
+{
+  "doctype": "Page",
+  "name": "srt-dashboard",
+  "page_name": "srt-dashboard",
+  "title": "SRT Dashboard",
+  "module": "Stock Reconciliation Tracking",
+  "standard": "Yes",
+  "roles": [
+    {"role": "System Manager"},
+    {"role": "Srt Super Admin"},
+    {"role": "Srt Admin"},
+    {"role": "Srt User"}
+  ]
+}

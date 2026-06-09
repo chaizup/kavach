@@ -1,0 +1,70 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-05-22 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "gap_between_stock_reconciliation_days"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "description": "Minimum number of days that must pass between two submitted Stock Reconciliation SRT docs for the same item. Set to 0 to disable enforcement. The check is applied at validate-time and is symmetric (backdated docs landing within the window are also blocked).",
+   "fieldname": "gap_between_stock_reconciliation_days",
+   "fieldtype": "Int",
+   "label": "Gap in two Stock Reconciliation of same item (days)",
+   "non_negative": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-05-22 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Stock Reconciliation Tracking",
+ "name": "SRT Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Srt Super Admin",
+   "share": 0,
+   "write": 1
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 1,
+   "read": 1,
+   "report": 0,
+   "role": "Srt Admin",
+   "share": 0,
+   "write": 0
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

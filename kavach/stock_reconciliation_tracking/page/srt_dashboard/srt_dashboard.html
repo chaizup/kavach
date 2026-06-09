@@ -1,0 +1,30 @@
+<!-- SRT Dashboard v0.0.9 shell.
+     IMPORTANT: HTML comments only. Jinja {# #} comments are NOT stripped by
+     Frappe build:scrub_html_template and any apostrophe inside breaks the
+     frappe.templates JS string (silent blank screen). See app-root 17 + 18.
+
+     CRITICAL: This file loads Tabulator + its CSS from CDN synchronously
+     BEFORE the JS controller runs. Frappe does NOT bundle Tabulator; without
+     these <link>/<script> tags the dashboard throws "Tabulator is not defined".
+     Pattern mirrors chaizup_toc:item_shortage_dashboard.html.
+
+     RESTRICT (v0.0.9):
+       - Do NOT remove the Tabulator CDN <link> and <script>. Self-contained
+         page; no shared Frappe bundle exists.
+       - Do NOT switch CDN host from jsdelivr without verifying global
+         availability (cdnjs has stale Tabulator versions). -->
+
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/css/tabulator.min.css"
+      crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/js/tabulator.min.js"
+        crossorigin="anonymous"></script>
+
+<div class="srt-dash-root w-full" style="width:100%; min-height:calc(100vh - 100px);">
+  <div class="srt-dash-tw-style-slot"></div>
+  <div class="srt-dash-header-slot"></div>
+  <div class="srt-dash-grid-slot"></div>
+  <div class="srt-dash-bulk-bar-slot"></div>
+  <div class="srt-dash-backdrop-slot"></div>
+  <div class="srt-dash-form-panel-slot"></div>
+</div>

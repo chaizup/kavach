@@ -1,0 +1,150 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-05-21 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "is_counted",
+  "batch_no",
+  "select_uom",
+  "qty_found",
+  "current_stock_in_selected_uom",
+  "stock_uom",
+  "current_stock_in_stock_uom",
+  "item_name_selected",
+  "item_code",
+  "warehouse",
+  "conversion_factor",
+  "valuation_rate"
+ ],
+ "fields": [
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "options": "Batch",
+   "label": "Batch Number",
+   "in_list_view": 1,
+   "columns": 3,
+   "reqd": 1,
+   "description": "Pick any batch of the parent item. Auto-populated batches are read from current Bin (qty > 0); user may also add batches at 0 qty."
+  },
+  {
+   "fieldname": "select_uom",
+   "fieldtype": "Link",
+   "options": "UOM",
+   "label": "Select UOM",
+   "in_list_view": 1,
+   "columns": 1,
+   "description": "UOM the counter is reporting Qty Found in. Auto-defaults to the item's higher UOM if available, else stock UOM. Affects column 4 (Current Stock in Selected UOM) — that recomputes as stock_qty / conversion_factor."
+  },
+  {
+   "fieldname": "qty_found",
+   "fieldtype": "Float",
+   "precision": "3",
+   "label": "Qty Found",
+   "in_list_view": 1,
+   "columns": 1,
+   "description": "Counter's physical-count qty in the chosen UOM. LEAVE BLANK on rows you did not count — those rows are excluded from the ERPNext SR on submit; their current stock is retained as-is."
+  },
+  {
+   "fieldname": "current_stock_in_selected_uom",
+   "fieldtype": "Float",
+   "precision": "3",
+   "label": "Current Stock (Selected UOM)",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1,
+   "description": "Current Bin qty for (this batch, this warehouse) ÷ conversion_factor for the selected UOM. Read-only display."
+  },
+  {
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "options": "UOM",
+   "label": "Stock UOM",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1,
+   "description": "Item's stock UOM. Read-only mirror from Item master."
+  },
+  {
+   "fieldname": "current_stock_in_stock_uom",
+   "fieldtype": "Float",
+   "precision": "3",
+   "label": "Current Stock (Stock UOM)",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1,
+   "description": "Current Bin qty for (this batch, this warehouse) in the item's stock UOM. The authoritative ledger qty before reconciliation."
+  },
+  {
+   "fieldname": "item_name_selected",
+   "fieldtype": "Data",
+   "label": "Item Name",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1,
+   "description": "Mirror of the parent's Item.item_name. Lets users see the item label on each row without flipping back to the header."
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "options": "Item",
+   "label": "Item",
+   "in_list_view": 0,
+   "read_only": 1,
+   "hidden": 0,
+   "description": "Auto-populated from parent.item on row add. Read-only — duplicates the parent's item so each child row can be queried independently if needed (e.g., audit JOINs). Visible in row-expand; hidden from the grid to keep it slim."
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "options": "Warehouse",
+   "label": "Warehouse",
+   "read_only": 1,
+   "hidden": 0,
+   "in_list_view": 0,
+   "description": "Auto-populated from parent.default_warehouse on row add. Read-only by spec — the SRT doc operates on a single warehouse picked at the parent level. Visible in row-expand; hidden from the grid (warehouse is constant within a doc) to keep the grid slim."
+  },
+  {
+   "fieldname": "conversion_factor",
+   "fieldtype": "Float",
+   "precision": "6",
+   "label": "Conversion Factor",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Internal: select_uom → stock_uom conversion factor. Hidden — recomputed by JS when select_uom changes."
+  },
+  {
+   "fieldname": "valuation_rate",
+   "fieldtype": "Currency",
+   "label": "Valuation Rate (Stock UOM)",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Internal: current Bin valuation rate for this (batch, warehouse). Used to populate the ERPNext SR Item row on submit so the SR posts with the right rate."
+  },
+  {
+   "fieldname": "is_counted",
+   "fieldtype": "Check",
+   "label": "Do Reconcile",
+   "default": "0",
+   "in_list_view": 1,
+   "columns": 1,
+   "description": "Check this box to include the row in the real ERPNext Stock Reconciliation on submit. UNCHECKED rows are ignored — their Qty Found is NOT considered; the batch keeps its current (timestamp) stock in the ledger. The operator must EXPLICITLY tick the box for every batch they actually counted; default state is unchecked."
+  }
+ ],
+ "istable": 1,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-05-21 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Stock Reconciliation Tracking",
+ "name": "Batch List",
+ "owner": "Administrator",
+ "permissions": [],
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -1,0 +1,49 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:KNOTIF-{YYYY}-{#####}",
+ "creation": "2026-06-09 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "description": "Typed notification store for Kavach Mobile. THREE categories: 'Global' (everyone), 'System Dev' (visible to System Managers only — developer/ops broadcasts), and 'User' (a single targeted user). The Message Center merges these with the user's Frappe Notification Log. Read-state is tracked per user in Kavach Notification Seen. Creating one fires a push to the relevant audience (see mobile_api.send_push_on_kavach_notification).",
+ "field_order": [
+  "title",
+  "category",
+  "column_break_1",
+  "severity",
+  "user",
+  "section_break_1",
+  "message",
+  "section_break_2",
+  "link_document_type",
+  "link_document_name"
+ ],
+ "fields": [
+  {"fieldname": "title", "fieldtype": "Data", "label": "Title", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "category", "fieldtype": "Select", "label": "Category", "options": "Global\nSystem Dev\nUser", "default": "Global", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1, "description": "Global = everyone. System Dev = System Managers only. User = the single user in the User field."},
+  {"fieldname": "column_break_1", "fieldtype": "Column Break"},
+  {"fieldname": "severity", "fieldtype": "Select", "label": "Severity", "options": "Info\nWarning\nCritical", "default": "Info", "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "user", "fieldtype": "Link", "options": "User", "label": "Target User", "mandatory_depends_on": "eval:doc.category=='User'", "depends_on": "eval:doc.category=='User'", "description": "Required only when Category = User."},
+  {"fieldname": "section_break_1", "fieldtype": "Section Break"},
+  {"fieldname": "message", "fieldtype": "Text", "label": "Message"},
+  {"fieldname": "section_break_2", "fieldtype": "Section Break", "label": "Link (optional)"},
+  {"fieldname": "link_document_type", "fieldtype": "Link", "options": "DocType", "label": "Reference DocType"},
+  {"fieldname": "link_document_name", "fieldtype": "Dynamic Link", "options": "link_document_type", "label": "Reference Name"}
+ ],
+ "links": [],
+ "modified": "2026-06-09 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Stock Reconciliation Tracking",
+ "name": "Kavach Notification",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "read": 1, "write": 1, "role": "System Manager", "share": 1, "report": 1, "export": 1},
+  {"read": 1, "role": "Srt Super Admin"},
+  {"read": 1, "role": "Srt Admin"},
+  {"read": 1, "role": "Srt User"}
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

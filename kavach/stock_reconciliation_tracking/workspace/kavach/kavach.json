@@ -1,0 +1,98 @@
+{
+ "app": "kavach",
+ "charts": [],
+ "content": "[]",
+ "creation": "2026-05-21 09:23:33.049749",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "hide_custom": 0,
+ "icon": "kavach-srt",
+ "idx": 0,
+ "indicator_color": "green",
+ "is_hidden": 0,
+ "label": "Kavach",
+ "link_type": "DocType",
+ "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Stock Reconciliation",
+   "link_count": 0,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Stock Reconciliation SRT",
+   "link_count": 0,
+   "link_to": "Stock Reconciliation SRT",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Setup",
+   "link_count": 0,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "SRT Settings",
+   "link_count": 0,
+   "link_to": "SRT Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "SRT Dashboard",
+   "link_count": 0,
+   "link_to": "srt-dashboard",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-05-23 20:17:24.123244",
+ "modified_by": "Administrator",
+ "module": "Stock Reconciliation Tracking",
+ "name": "Kavach",
+ "number_cards": [],
+ "owner": "Administrator",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 0.0,
+ "shortcuts": [
+  {
+   "doc_view": "",
+   "label": "Stock Reconciliation SRT",
+   "link_to": "Stock Reconciliation SRT",
+   "type": "DocType"
+  },
+  {
+   "doc_view": "",
+   "label": "SRT Settings",
+   "link_to": "SRT Settings",
+   "type": "DocType"
+  },
+  {
+   "doc_view": "",
+   "label": "SRT Dashboard",
+   "link_to": "srt-dashboard",
+   "type": "Page"
+  }
+ ],
+ "title": "Kavach",
+ "type": "Workspace"
+}

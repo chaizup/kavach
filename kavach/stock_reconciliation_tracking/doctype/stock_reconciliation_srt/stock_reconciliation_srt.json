@@ -1,0 +1,339 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "naming_series:",
+ "creation": "2026-05-21 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "is_submittable": 1,
+ "field_order": [
+  "section_header",
+  "naming_series",
+  "item",
+  "default_warehouse",
+  "column_break_header",
+  "item_name",
+  "company",
+
+  "section_default_uom",
+  "default_uom",
+  "total_current_stock_in_default_uom",
+  "column_break_default_uom",
+  "total_qty_found_in_default_uom",
+
+  "section_higher_uom",
+  "higher_uom",
+  "total_current_stock_in_higher_uom",
+  "column_break_higher_uom",
+  "total_qty_found_in_higher_uom",
+  "higher_uom_cf",
+
+  "section_posting",
+  "edit_posting",
+  "posting_date",
+  "column_break_posting",
+  "posting_time",
+
+  "section_batches",
+  "batches",
+
+  "section_remarks",
+  "user_remark",
+  "admin_remark",
+  "admin_approved_by",
+  "super_admin_remark",
+  "super_admin_approved_by",
+
+  "section_erpnext_link",
+  "linked_erpnext_sr",
+  "workflow_state",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_header",
+   "fieldtype": "Section Break",
+   "label": "Item & Identity"
+  },
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "SRT-RECO-.YYYY.-.#####",
+   "default": "SRT-RECO-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item",
+   "fieldtype": "Link",
+   "options": "Item",
+   "label": "Item",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Pick the item to reconcile. The batches table + totals populate ONLY after Default Warehouse is also set, scoped to that warehouse."
+  },
+  {
+   "fieldname": "default_warehouse",
+   "fieldtype": "Link",
+   "options": "Warehouse",
+   "label": "Default Warehouse",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Warehouse to reconcile. All batches table rows + parent totals are scoped to this warehouse. Each child row's warehouse is auto-populated from this field and is read-only."
+  },
+  {
+   "fieldname": "column_break_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "label": "Item Name",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "Mirror of Item.item_name. Fetched via fetch_from to avoid an extra round-trip."
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "options": "Company",
+   "label": "Company",
+   "reqd": 1,
+   "description": "Used to resolve the Stock Adjustment account when the real ERPNext Stock Reconciliation is created on submit."
+  },
+
+  {
+   "fieldname": "section_default_uom",
+   "fieldtype": "Section Break",
+   "label": "Default UOM Totals"
+  },
+  {
+   "fieldname": "default_uom",
+   "fieldtype": "Link",
+   "options": "UOM",
+   "label": "Default UOM",
+   "read_only": 1,
+   "description": "Item.stock_uom — the authoritative UOM that the ERPNext Bin stores qty in. Auto-populated."
+  },
+  {
+   "fieldname": "total_current_stock_in_default_uom",
+   "fieldtype": "Float",
+   "precision": "3",
+   "label": "Total Current Stock of Item (in Default UOM)",
+   "read_only": 1,
+   "description": "Sum of Bin.actual_qty for this item in the chosen Default Warehouse. Snapshot at the moment item + warehouse were picked."
+  },
+  {
+   "fieldname": "column_break_default_uom",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_qty_found_in_default_uom",
+   "fieldtype": "Float",
+   "precision": "3",
+   "label": "Total Qty Actually Found (in Default UOM)",
+   "read_only": 1,
+   "description": "Σ over all child rows of:  qty_found_in_stock_uom (if qty_found is set on that row) OR  current_stock_in_stock_uom (if qty_found left blank). Recomputed live on any child row edit."
+  },
+
+  {
+   "fieldname": "section_higher_uom",
+   "fieldtype": "Section Break",
+   "label": "Higher UOM Totals"
+  },
+  {
+   "fieldname": "higher_uom",
+   "fieldtype": "Link",
+   "options": "UOM",
+   "label": "Higher UOM",
+   "read_only": 1,
+   "description": "Item's largest-CF UOM from its UOM Conversion Detail table (e.g., if item has Gram (default) + Kg in the item master, this resolves to Kg). Falls back to stock UOM if the item has no alt UOM configured."
+  },
+  {
+   "fieldname": "total_current_stock_in_higher_uom",
+   "fieldtype": "Float",
+   "precision": "3",
+   "label": "Total Current Stock of Item (in Higher UOM)",
+   "read_only": 1,
+   "description": "total_current_stock_in_default_uom ÷ higher_uom_cf."
+  },
+  {
+   "fieldname": "column_break_higher_uom",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_qty_found_in_higher_uom",
+   "fieldtype": "Float",
+   "precision": "3",
+   "label": "Total Qty Actually Found (in Higher UOM)",
+   "read_only": 1,
+   "description": "total_qty_found_in_default_uom ÷ higher_uom_cf. Recomputed live."
+  },
+  {
+   "fieldname": "higher_uom_cf",
+   "fieldtype": "Float",
+   "precision": "6",
+   "label": "Higher UOM CF",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Internal: conversion factor for higher_uom relative to stock_uom. Hidden helper field."
+  },
+
+  {
+   "fieldname": "section_posting",
+   "fieldtype": "Section Break",
+   "label": "Posting"
+  },
+  {
+   "fieldname": "edit_posting",
+   "fieldtype": "Check",
+   "label": "Edit Posting",
+   "default": "0",
+   "description": "When OFF (default), Posting Date + Time are read-only and pinned to 'now'. Toggle ON to allow backdating before submit."
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "read_only_depends_on": "eval:!doc.edit_posting",
+   "reqd": 1,
+   "description": "Date the SR will be posted on. Defaults to today; lift the lock via 'Edit Posting' to backdate."
+  },
+  {
+   "fieldname": "column_break_posting",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "posting_time",
+   "fieldtype": "Time",
+   "label": "Posting Time",
+   "read_only_depends_on": "eval:!doc.edit_posting",
+   "reqd": 1,
+   "description": "Time-of-day for the SR. Defaults to 'now'."
+  },
+
+  {
+   "fieldname": "section_batches",
+   "fieldtype": "Section Break",
+   "label": "Batches"
+  },
+  {
+   "fieldname": "batches",
+   "fieldtype": "Table",
+   "options": "Batch List",
+   "label": "Batches",
+   "description": "Auto-populated on item change with one row per (batch, warehouse) where current Bin qty > 0. Type a Qty Found on any row to update the parent totals live. Rows where Qty Found is BLANK are excluded from the real ERPNext SR on submit (their current stock is implicitly retained)."
+  },
+
+  {
+   "fieldname": "section_remarks",
+   "fieldtype": "Section Break",
+   "label": "Remarks & Approvals",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "user_remark",
+   "fieldtype": "Text Editor",
+   "label": "User Remark",
+   "description": "Free-form note from the SRT operator (Srt User). Optional. Use to record context — e.g., 'WH 1.9 monthly cycle count, 2026-05-21, scale calibration verified', notable discrepancies seen during the count, batches that physically couldn't be located, etc."
+  },
+  {
+   "fieldname": "admin_remark",
+   "fieldtype": "Text Editor",
+   "label": "Admin Remark",
+   "description": "Free-form note from Srt Admin during the Draft → Admin Approval transition. Optional. Use to record the admin's review verdict — e.g., 'Counts reasonable; approved for ledger posting'."
+  },
+  {
+   "fieldname": "admin_approved_by",
+   "fieldtype": "Link",
+   "options": "User",
+   "label": "Admin Approved By",
+   "read_only": 1,
+   "in_standard_filter": 1,
+   "description": "Auto-stamped with frappe.session.user when the SRT is submitted (Draft → Admin Approval). Read-only — set by the controller's on_submit hook. Placed directly under Admin Remark for visual pairing."
+  },
+  {
+   "fieldname": "super_admin_remark",
+   "fieldtype": "Text Editor",
+   "label": "Super Admin Remark",
+   "allow_on_submit": 1,
+   "description": "Free-form note from Srt Super Admin during the Admin Approval → Super Admin Approval transition. Optional. Editable AFTER the SRT is submitted (allow_on_submit=1) because the super admin writes it on a Submitted doc just before clicking 'Submit Linked ERPNext SR'."
+  },
+  {
+   "fieldname": "super_admin_approved_by",
+   "fieldtype": "Link",
+   "options": "User",
+   "label": "Super Admin Approved By",
+   "read_only": 1,
+   "in_standard_filter": 1,
+   "description": "Auto-stamped with frappe.session.user when the linked ERPNext SR is submitted via submit_linked_sr() (Admin Approval → Super Admin Approval). Read-only — set by the controller. Placed directly under Super Admin Remark for visual pairing."
+  },
+  {
+   "fieldname": "section_erpnext_link",
+   "fieldtype": "Section Break",
+   "label": "Audit Trail",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "linked_erpnext_sr",
+   "fieldtype": "Link",
+   "options": "Stock Reconciliation",
+   "label": "Linked ERPNext Stock Reconciliation",
+   "read_only": 1,
+   "description": "Populated on submit (Draft → Admin Approval). Points at the real ERPNext Stock Reconciliation created in DRAFT by this SRT doc. The ERPNext SR is submitted only when Srt Super Admin moves the workflow to Super Admin Approval."
+  },
+  {
+   "fieldname": "workflow_state",
+   "fieldtype": "Link",
+   "options": "Workflow State",
+   "label": "Status",
+   "read_only": 1,
+   "in_standard_filter": 1,
+   "no_copy": 1,
+   "description": "Frappe workflow state. Lifecycle: Draft → Admin Approval (Srt Admin submits, draft ERPNext SR created) → Super Admin Approval (Srt Super Admin submits the ERPNext SR) → Close (cancelled). Managed by the Stock Reconciliation SRT Workflow. NOTE: in_list_view is INTENTIONALLY OMITTED — Frappe's list view auto-renders a colored Status indicator at the start of every row for workflow-enabled doctypes. Adding in_list_view=1 here causes the Status column to appear twice (auto-indicator + explicit column). Keep filter only."
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "options": "Stock Reconciliation SRT",
+   "label": "Amended From",
+   "no_copy": 1,
+   "print_hide": 1,
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-05-21 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Stock Reconciliation Tracking",
+ "name": "Stock Reconciliation SRT",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1, "delete": 1, "permlevel": 0, "read": 1,
+   "role": "System Manager",
+   "share": 1, "submit": 1, "cancel": 1, "amend": 1, "write": 1
+  },
+  {
+   "create": 1, "delete": 0, "permlevel": 0, "read": 1,
+   "role": "Srt Super Admin",
+   "share": 1, "submit": 1, "cancel": 1, "amend": 0, "write": 1
+  },
+  {
+   "create": 1, "delete": 0, "permlevel": 0, "read": 1,
+   "role": "Srt Admin",
+   "share": 1, "submit": 1, "cancel": 1, "amend": 0, "write": 1
+  },
+  {
+   "create": 1, "delete": 0, "if_owner": 1, "permlevel": 0, "read": 1,
+   "role": "Srt User",
+   "share": 0, "submit": 0, "cancel": 0, "amend": 0, "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
