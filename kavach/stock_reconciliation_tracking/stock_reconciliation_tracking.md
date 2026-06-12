@@ -1,23 +1,55 @@
 # Stock Reconciliation Tracking — Module Reference
 
-The only module in this app. Contains both shipped DocTypes (parent + child) and the whitelisted API.
+The only module in the kavach app. Contains 6 DocTypes, 1 Page, 2 API files, and 1 Workspace.
 
 See `apps/kavach/kavach.md` (app-root) for the full architecture, field map, restricted areas, sync block.
 
 ## Folder structure
 
 ```
-kavach/      ← module root (this folder)
-├── api.py                          ← whitelisted endpoints (3 methods)
+stock_reconciliation_tracking/     ← module root (this folder)
+├── api.py                         ← whitelisted read-only endpoints (5 methods)
+├── api.md                         ← API component docs
+├── mobile_api.py                  ← mobile backend bridge (OAuth, stock reports, push, messages)
+├── mobile_api.md                  ← mobile API component docs
+├── stock_reconciliation_tracking.md ← this file
 ├── doctype/
-│   ├── stock_reconciliation_srt/   ← parent (submittable)
+│   ├── stock_reconciliation_srt/  ← parent (submittable, workflow-enabled)
 │   │   ├── stock_reconciliation_srt.json
-│   │   ├── stock_reconciliation_srt.py    ← validate + on_submit + on_cancel
-│   │   └── stock_reconciliation_srt.js    ← form controller
-│   └── batch_list/                 ← child
-│       ├── batch_list.json
-│       └── batch_list.py            ← stub
-└── kavach.md  ← this file
+│   │   ├── stock_reconciliation_srt.py   ← controller (954 LOC): validate + on_submit + on_cancel
+│   │   ├── stock_reconciliation_srt.js   ← form controller
+│   │   └── stock_reconciliation_srt.md   ← DocType docs
+│   ├── batch_list/                ← child of Stock Reconciliation SRT
+│   │   ├── batch_list.json
+│   │   ├── batch_list.py          ← stub (logic in parent)
+│   │   └── batch_list.md          ← DocType docs
+│   ├── srt_settings/              ← Single DocType (gap_days setting)
+│   │   ├── srt_settings.json
+│   │   ├── srt_settings.py        ← minimal validate (gap_days >= 0)
+│   │   ├── srt_settings.js        ← form script
+│   │   └── srt_settings.md        ← DocType docs
+│   ├── kavach_notification/       ← typed in-app notification (3 categories)
+│   │   ├── kavach_notification.json
+│   │   ├── kavach_notification.py ← user-targeting validation
+│   │   └── kavach_notification.md ← DocType docs
+│   ├── kavach_notification_seen/  ← per-user read marker for notifications
+│   │   ├── kavach_notification_seen.json
+│   │   ├── kavach_notification_seen.py ← stub
+│   │   └── kavach_notification_seen.md ← DocType docs
+│   └── kavach_push_token/         ← Expo push token per (user, device)
+│       ├── kavach_push_token.json
+│       ├── kavach_push_token.py   ← stub (owner-scoped)
+│       └── kavach_push_token.md   ← DocType docs
+├── page/
+│   └── srt_dashboard/             ← main operator surface
+│       ├── srt_dashboard.json     ← page meta + 4 roles
+│       ├── srt_dashboard.py       ← 11 whitelisted server methods (628 LOC)
+│       ├── srt_dashboard.js       ← page controller (~2700 LOC)
+│       ├── srt_dashboard.html     ← Jinja shell (Tabulator CDN)
+│       └── srt_dashboard.md       ← comprehensive page docs
+└── workspace/
+    └── kavach/
+        └── kavach.json            ← Kavach workspace (links to SRT, Settings, Dashboard)
 ```
 
 ## Use cases
@@ -251,3 +283,4 @@ The dashboard has gone through 19 iterations of polish in a single day's session
 
 **Page-level docs:** `page/srt_dashboard/srt_dashboard.md` (canonical, sync block at end).
 **Cross-suite regression:** 27/27 (Case 1/2 + gap + historical + dashboard) — locked at every iteration.
+

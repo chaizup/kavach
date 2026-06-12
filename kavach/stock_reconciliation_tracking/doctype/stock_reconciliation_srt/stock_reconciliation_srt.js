@@ -279,7 +279,6 @@ function _ipv_srt_fetch_and_load(frm) {
         frm.set_value("higher_uom",                           d.higher_uom);
         frm.set_value("higher_uom_cf",                        d.higher_uom_cf);
         frm.set_value("total_current_stock_in_higher_uom",    d.total_current_stock_in_higher_uom);
-        // Initial "found" totals = current (because no rows are counted yet)
         frm.set_value("total_qty_found_in_default_uom",       d.total_current_stock_in_default_uom);
         frm.set_value("total_qty_found_in_higher_uom",        d.total_current_stock_in_higher_uom);
 

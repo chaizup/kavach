@@ -21,7 +21,7 @@ add_to_apps_screen = [
         "name": "kavach",
         "logo": "/assets/kavach/images/kavach-logo.svg",
         "title": "Kavach",
-        "route": "/app/kavach",
+        "route": "/desk/kavach",
     }
 ]
 

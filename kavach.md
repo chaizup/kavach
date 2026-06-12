@@ -6,6 +6,43 @@
 
 ---
 
+## App Icon & Branding (2026-06-11)
+
+**App Icon**: Brown thermometer with green boxes on white circle (from `refs/kavach.svg`).
+**SRT Icon**: Stock audit clipboard with magnifying glass on white circle (from `refs/SRT.svg`).
+
+### Asset Chain
+
+| Asset | Path | Purpose |
+|---|---|---|
+| App logo | `public/images/kavach-logo.svg` | Logo on /apps tile, Desktop Icon, navbar |
+| SRT module image | `public/images/stock-reconciliation-tracking.svg` | Stock Reconciliation Tracking module icon (from `refs/SRT.svg`) |
+| Icon sprite | `public/icons/kavach-icons.svg` | SVG sprite: `icon-kavach-icon` (app icon), `icon-kavach-srt` (SRT icon from `refs/SRT.svg`) |
+| Desktop icon solid | `public/icons/desktop_icons/solid/kavach.svg` | Sidebar icon variant (solid) |
+| Desktop icon subtle | `public/icons/desktop_icons/subtle/kavach.svg` | Sidebar icon variant (subtle) |
+| Desktop Icon JSON | `desktop_icon/kavach.json` | Registers Kavach as App-type tile, links to `/app/kavach` |
+| Workspace Sidebar JSON | `workspace_sidebar/kavach.json` | Sidebar nav: Home (collapsible) + Stock Reconciliation child (module:`""`) |
+
+### hooks.py wiring
+
+- `app_logo_url` / `app_icon_url` → `/assets/kavach/images/kavach-logo.svg`
+- `add_to_apps_screen` → `/app/kavach` tile with logo
+- `app_include_icons` → `/assets/kavach/icons/kavach-icons.svg` (sprite with `icon-kavach-icon` + `icon-kavach-srt`)
+
+### Workspace icon resolution
+
+Workspace JSON `"icon": "kavach-srt"` → sprite symbol `icon-kavach-srt` (SRT audit icon).
+Workspace Sidebar `"header_icon": "kavach-icon"` → sprite symbol `icon-kavach-icon` (app icon).
+
+### Sidebar hierarchy
+
+```
+Kavach (collapsible, indent 0) → Kavach workspace
+  └─ Stock Reconciliation (indent 1) → Kavach workspace (SRT doctypes)
+```
+
+---
+
 ## Valuation rate preservation (2026-05-21)
 
 The stock team uses SRT and has limited rate knowledge by design. **SRT MUST NOT alter the existing valuation rate.**

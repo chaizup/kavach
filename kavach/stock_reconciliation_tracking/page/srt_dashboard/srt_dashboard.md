@@ -300,7 +300,7 @@ render fix — see § 6a; `node --check` passes, no server logic touched, so the
 
 ```
 APP:    kavach
-PAGE:   srt_dashboard @ v0.0.9.33 (2026-05-31)
+PAGE:   srt_dashboard @ v0.0.9.33 (2026-06-11)
 FEAT932: get_batch_summary returns qty_at_origin/qty_at_last_sr (_fetch_balance_as_of); fmt_inout shows opening balance chip above In/Out.
 FEAT933: "State"→"Difference" (amber chips, calc tooltip); In/Out word labels removed (colour legend in header); no headerSort on modal; "No change"/uncounted rows hidden (data filter r.is_counted); modal body scrollable (:has(.srt-view-grid)); remark freeze: form=user_remark only (ro_admin=ro_super=true), modal admin/super by stage+role.
 FIX929: State/Status pills use format_number() not frappe.format({fieldtype:Float}) — the latter wraps numbers in <div style='text-align:right'> which leaked into escape_html'd pill text (literal tags) / inline pills (stray block). See § 6a.

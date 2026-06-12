@@ -1,0 +1,1149 @@
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   SRT Web App — Client-Side Application
+   FILE: script.html (in GAS editor)
+
+   Single-Page Application with:
+     - Login (Frappe site URL + email + password)
+     - Dashboard (2 tabs: Admin Approval, Super Admin Approval)
+     - Create SRT form (item search, batch cards, totals)
+     - History (past SRTs with status)
+     - View SRT detail modal (batches, remarks, approve/reject)
+   ═══════════════════════════════════════════════════════════════════ */
+
+// ═════════════════════════════════════════════════════════════════
+// §1. UTIL — google.script.run Promise wrapper + helpers
+// ═════════════════════════════════════════════════════════════════
+
+function callServer(fn, ...args) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(e => reject(new Error(e.message || String(e))))
+      [fn](...args);
+  });
+}
+
+function $(sel) { return document.querySelector(sel); }
+function $$(sel) { return document.querySelectorAll(sel); }
+
+function fmtNum(v, precision) {
+  const n = Number(v) || 0;
+  return n.toLocaleString('en-IN', {
+    minimumFractionDigits: precision || 0,
+    maximumFractionDigits: precision || 3,
+  });
+}
+
+function fmtDate(d) {
+  if (!d) return '-';
+  const dt = new Date(d);
+  return dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// §2. STATE
+// ═════════════════════════════════════════════════════════════════
+
+const App = {
+  user: null,       // { email, fullName, roles }
+  currentPage: '',  // 'dashboard' | 'create' | 'history'
+  dashboard: {
+    tab: 'Admin Approval Pending',
+    rows: [],
+    counts: {},
+    selected: new Set(),
+    loading: false,
+  },
+  form: {
+    item: '', item_name: '', default_warehouse: '',
+    posting_date: '', posting_time: '',
+    default_uom: '', higher_uom: '', higher_uom_cf: 1,
+    total_current_stock_in_default_uom: 0,
+    total_current_stock_in_higher_uom: 0,
+    total_qty_found_in_default_uom: 0,
+    total_qty_found_in_higher_uom: 0,
+    batches: [],
+    company: '',
+    name: null, modified: null,
+  },
+  history: { rows: [], loading: false },
+};
+
+function hasRole(role) {
+  return App.user && App.user.roles && App.user.roles.includes(role);
+}
+function isAdmin() {
+  return hasRole('Srt Admin') || hasRole('System Manager') || (App.user && App.user.email === 'Administrator');
+}
+function isSuperAdmin() {
+  return hasRole('Srt Super Admin') || hasRole('System Manager') || (App.user && App.user.email === 'Administrator');
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// §3. TOAST
+// ═════════════════════════════════════════════════════════════════
+
+let _toastTimer = null;
+function showToast(msg, type, duration) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.className = 'toast' + (type ? ' toast-' + type : '');
+  el.style.display = 'block';
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.style.display = 'none'; }, duration || 3000);
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// §4. MODAL
+// ═════════════════════════════════════════════════════════════════
+
+function showModal(html) {
+  $('#modal-content').innerHTML = html;
+  $('#modal-overlay').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeModal() {
+  $('#modal-overlay').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// Close modal on overlay tap
+document.addEventListener('DOMContentLoaded', () => {
+  $('#modal-overlay').addEventListener('click', e => {
+    if (e.target === $('#modal-overlay')) closeModal();
+  });
+});
+
+
+// ═════════════════════════════════════════════════════════════════
+// §5. ROUTER
+// ═════════════════════════════════════════════════════════════════
+
+function navigateTo(page) {
+  App.currentPage = page;
+  $$('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.page === page);
+  });
+
+  const titles = { dashboard: 'Dashboard', create: 'New SRT', history: 'History' };
+  $('#top-bar-title').textContent = titles[page] || 'SRT';
+
+  const contentArea = $('#content-area');
+  contentArea.innerHTML = '<div class="loading-center"><div class="spinner"></div></div>';
+
+  switch (page) {
+    case 'dashboard': renderDashboard(); break;
+    case 'create':    renderCreateForm(); break;
+    case 'history':   renderHistory(); break;
+    default:          renderDashboard();
+  }
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// §6. LOGIN
+// ═════════════════════════════════════════════════════════════════
+
+function initLogin() {
+  const form = $('#login-form');
+  const btn = $('#login-btn');
+  const errEl = $('#login-error');
+
+  // Check if URL is pre-configured
+  callServer('isUrlLocked').then(locked => {
+    if (locked) {
+      $('#url-field-wrap').style.display = 'none';
+      $('#login-url').removeAttribute('required');
+    }
+  }).catch(() => {});
+
+  // Restore last-used URL
+  const lastUrl = localStorage.getItem('srt_frappe_url');
+  if (lastUrl) $('#login-url').value = lastUrl;
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errEl.style.display = 'none';
+    btn.classList.add('loading');
+    btn.disabled = true;
+
+    const url = $('#login-url').value.trim();
+    const email = $('#login-email').value.trim();
+    const pwd = $('#login-password').value;
+
+    try {
+      const result = await callServer('loginWithUrl', url, email, pwd);
+      if (!result.success) {
+        errEl.textContent = result.error || 'Login failed';
+        errEl.style.display = 'block';
+        return;
+      }
+
+      // Save URL for next time
+      if (url) localStorage.setItem('srt_frappe_url', url);
+
+      App.user = { email: result.email, fullName: result.fullName, roles: result.roles };
+      showApp();
+    } catch (err) {
+      errEl.textContent = err.message || 'Connection failed';
+      errEl.style.display = 'block';
+    } finally {
+      btn.classList.remove('loading');
+      btn.disabled = false;
+    }
+  });
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// §7. APP INIT
+// ═════════════════════════════════════════════════════════════════
+
+function showPage(id) {
+  $$('.page').forEach(p => p.classList.remove('active'));
+  const el = document.getElementById(id);
+  if (el) el.classList.add('active');
+}
+
+function showApp() {
+  showPage('app-shell');
+  // Wire up bottom nav
+  $$('.nav-item').forEach(btn => {
+    btn.addEventListener('click', () => navigateTo(btn.dataset.page));
+  });
+  // Wire up logout
+  $('#btn-logout').addEventListener('click', async () => {
+    try { await callServer('logout'); } catch(_) {}
+    App.user = null;
+    showPage('page-login');
+  });
+
+  navigateTo('dashboard');
+}
+
+// Boot
+document.addEventListener('DOMContentLoaded', async () => {
+  initLogin();
+
+  try {
+    const session = await callServer('checkSession');
+    if (session.loggedIn) {
+      App.user = { email: session.email, fullName: session.fullName, roles: session.roles };
+      showApp();
+    } else {
+      showPage('page-login');
+    }
+  } catch (e) {
+    showPage('page-login');
+  }
+});
+
+
+// ═════════════════════════════════════════════════════════════════
+// §8. DASHBOARD
+// ═════════════════════════════════════════════════════════════════
+
+async function renderDashboard() {
+  const area = $('#content-area');
+  App.dashboard.selected.clear();
+
+  // Determine which tabs to show based on role
+  const tabs = [];
+  if (isAdmin())      tabs.push('Admin Approval Pending');
+  if (isSuperAdmin()) tabs.push('Super Admin Approval Pending');
+  if (tabs.length === 0) tabs.push('Admin Approval Pending'); // fallback
+
+  if (!tabs.includes(App.dashboard.tab)) App.dashboard.tab = tabs[0];
+
+  // Fetch counts
+  try {
+    App.dashboard.counts = await callServer('getDashboardCounts');
+  } catch(_) { App.dashboard.counts = {}; }
+
+  area.innerHTML = buildDashboardHtml(tabs);
+  bindDashboardEvents(tabs);
+  loadDashboardRows();
+}
+
+function buildDashboardHtml(tabs) {
+  const tabsHtml = tabs.map(t => {
+    const count = App.dashboard.counts[t] || 0;
+    const active = t === App.dashboard.tab ? 'active' : '';
+    const label = t === 'Admin Approval Pending' ? 'Admin' : 'Super Admin';
+    return `<button class="tab-btn ${active}" data-tab="${escHtml(t)}">
+      ${label} <span class="tab-badge">${count}</span>
+    </button>`;
+  }).join('');
+
+  return `
+    <div class="refresh-bar">
+      <button onclick="loadDashboardRows()">Refresh</button>
+    </div>
+    <div class="tabs">${tabsHtml}</div>
+    <div class="select-all-bar hidden" id="select-all-bar">
+      <input type="checkbox" id="select-all-cb">
+      <label for="select-all-cb">Select All</label>
+    </div>
+    <div id="dashboard-list"></div>
+    <div id="bulk-bar" class="bulk-bar hidden"></div>
+  `;
+}
+
+function bindDashboardEvents(tabs) {
+  // Tab switching
+  $$('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App.dashboard.tab = btn.dataset.tab;
+      App.dashboard.selected.clear();
+      $$('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === App.dashboard.tab));
+      loadDashboardRows();
+    });
+  });
+
+  // Select all
+  const selectAllCb = $('#select-all-cb');
+  if (selectAllCb) {
+    selectAllCb.addEventListener('change', () => {
+      if (selectAllCb.checked) {
+        App.dashboard.rows.forEach(r => App.dashboard.selected.add(r.name));
+      } else {
+        App.dashboard.selected.clear();
+      }
+      updateDashboardSelection();
+    });
+  }
+}
+
+async function loadDashboardRows() {
+  const list = $('#dashboard-list');
+  if (!list) return;
+  list.innerHTML = '<div class="loading-center"><div class="spinner"></div></div>';
+  App.dashboard.selected.clear();
+  updateBulkBar();
+
+  try {
+    App.dashboard.rows = await callServer('getDashboardRows', App.dashboard.tab, null);
+    renderDashboardList();
+  } catch (e) {
+    if (e.message && e.message.includes('SESSION_EXPIRED')) {
+      showToast('Session expired — please login again', 'error');
+      showPage('page-login');
+      return;
+    }
+    list.innerHTML = `<div class="empty-state">
+      <h3>Error loading data</h3>
+      <p>${escHtml(e.message)}</p>
+    </div>`;
+  }
+}
+
+function renderDashboardList() {
+  const list = $('#dashboard-list');
+  const rows = App.dashboard.rows || [];
+
+  if (rows.length === 0) {
+    list.innerHTML = `<div class="empty-state">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+      </svg>
+      <h3>No pending approvals</h3>
+      <p>All caught up! Check back later.</p>
+    </div>`;
+    $('#select-all-bar').classList.add('hidden');
+    return;
+  }
+
+  // Show select all bar for admins
+  const canApprove = (App.dashboard.tab === 'Admin Approval Pending' && isAdmin())
+                  || (App.dashboard.tab === 'Super Admin Approval Pending' && isSuperAdmin());
+  const selBar = $('#select-all-bar');
+  if (canApprove && rows.length > 1) {
+    selBar.classList.remove('hidden');
+  } else {
+    selBar.classList.add('hidden');
+  }
+
+  list.innerHTML = rows.map(r => {
+    const sel = App.dashboard.selected.has(r.name) ? 'checked' : '';
+    const pill = statusPill(r.workflow_state);
+    const delta = (Number(r.total_qty_found_in_default_uom) || 0) -
+                  (Number(r.total_current_stock_in_default_uom) || 0);
+    const deltaClass = Math.abs(delta) < 0.001 ? 'delta-matched' : (delta > 0 ? 'delta-over' : 'delta-short');
+
+    return `<div class="card" data-name="${escHtml(r.name)}">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2" style="gap:10px; flex:1; min-width:0;">
+          ${canApprove ? `<input type="checkbox" class="dash-cb" data-name="${escHtml(r.name)}" ${sel}
+            style="width:20px;height:20px;accent-color:#4f46e5;flex-shrink:0;">` : ''}
+          <div style="min-width:0; flex:1;">
+            <div class="card-title truncate">${escHtml(r.item_name || r.item)}</div>
+            <div class="card-subtitle truncate">${escHtml(r.name)} &middot; ${escHtml(r.default_warehouse)}</div>
+          </div>
+        </div>
+        ${pill}
+      </div>
+      <div class="card-row">
+        <div>
+          <span class="card-label">Current</span>
+          <span class="card-value" style="margin-left:6px;">${fmtNum(r.total_current_stock_in_default_uom)}</span>
+          <span class="total-uom">${escHtml(r.default_uom || '')}</span>
+        </div>
+        <div>
+          <span class="card-label">Found</span>
+          <span class="card-value ${deltaClass}" style="margin-left:6px;">${fmtNum(r.total_qty_found_in_default_uom)}</span>
+        </div>
+      </div>
+      <div class="card-row" style="margin-top:4px;">
+        <span class="card-label">${fmtDate(r.posting_date)}</span>
+        <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); viewSrt('${escHtml(r.name)}')">
+          View
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Bind card taps
+  list.querySelectorAll('.card').forEach(card => {
+    card.addEventListener('click', e => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+      viewSrt(card.dataset.name);
+    });
+  });
+
+  // Bind checkboxes
+  list.querySelectorAll('.dash-cb').forEach(cb => {
+    cb.addEventListener('change', e => {
+      e.stopPropagation();
+      if (cb.checked) App.dashboard.selected.add(cb.dataset.name);
+      else App.dashboard.selected.delete(cb.dataset.name);
+      updateBulkBar();
+    });
+  });
+}
+
+function updateDashboardSelection() {
+  $$('.dash-cb').forEach(cb => {
+    cb.checked = App.dashboard.selected.has(cb.dataset.name);
+  });
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const bar = $('#bulk-bar');
+  if (!bar) return;
+  const count = App.dashboard.selected.size;
+  if (count === 0) {
+    bar.classList.add('hidden');
+    return;
+  }
+  bar.classList.remove('hidden');
+  bar.innerHTML = `
+    <span class="bulk-count">${count} selected</span>
+    <div class="bulk-actions">
+      <button class="btn btn-success btn-sm" onclick="bulkApprove()">Approve All</button>
+      <button class="btn btn-sm" style="background:rgba(255,255,255,0.2);color:#fff;" onclick="App.dashboard.selected.clear(); updateDashboardSelection();">Cancel</button>
+    </div>
+  `;
+}
+
+async function bulkApprove() {
+  const names = Array.from(App.dashboard.selected);
+  if (names.length === 0) return;
+
+  const remark = prompt('Add a remark for all (optional):') || '';
+
+  showToast('Approving ' + names.length + ' SRTs...', '');
+  try {
+    const results = await callServer('bulkApproveSrt', names, remark);
+    const ok = results.filter(r => r.ok).length;
+    const fail = results.filter(r => !r.ok).length;
+    if (fail > 0) {
+      showToast(`${ok} approved, ${fail} failed`, 'warning', 4000);
+    } else {
+      showToast(`${ok} approved successfully`, 'success');
+    }
+    App.dashboard.selected.clear();
+    // Refresh
+    App.dashboard.counts = await callServer('getDashboardCounts');
+    $$('.tab-btn').forEach(btn => {
+      const t = btn.dataset.tab;
+      const badge = btn.querySelector('.tab-badge');
+      if (badge) badge.textContent = App.dashboard.counts[t] || 0;
+    });
+    loadDashboardRows();
+  } catch (e) {
+    showToast(e.message || 'Bulk approve failed', 'error');
+  }
+}
+
+function statusPill(state) {
+  const map = {
+    'Draft':                  ['pill-draft',     'Draft'],
+    'Admin Approval':         ['pill-admin',     'Admin Approved'],
+    'Super Admin Approval':   ['pill-super',     'Completed'],
+    'Approved By System':     ['pill-system',    'Auto-Approved'],
+    'Close':                  ['pill-close',     'Closed'],
+  };
+  const [cls, label] = map[state] || ['pill-draft', state || 'Unknown'];
+  return `<span class="pill ${cls}">${escHtml(label)}</span>`;
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// §9. VIEW SRT DETAIL (MODAL)
+// ═════════════════════════════════════════════════════════════════
+
+async function viewSrt(name) {
+  showModal(`<div class="modal-body"><div class="loading-center"><div class="spinner"></div><p class="loading-text">Loading...</p></div></div>`);
+
+  try {
+    const [doc, batches] = await Promise.all([
+      callServer('loadSrtForm', name),
+      callServer('getBatchSummary', name),
+    ]);
+
+    const canApproveAdmin = isAdmin() && doc.workflow_state === 'Draft' && doc.docstatus === 0;
+    const canApproveSuperAdmin = isSuperAdmin() && doc.workflow_state === 'Admin Approval' && doc.docstatus === 1;
+    const canReject = (canApproveAdmin || canApproveSuperAdmin);
+    const canApprove = canApproveAdmin || canApproveSuperAdmin;
+
+    const remarkLabel = canApproveAdmin ? 'Admin Remark' : 'Super Admin Remark';
+
+    const batchesHtml = (batches || []).map(b => {
+      const qf = Number(b.qty_found) || 0;
+      const cur = Number(b.current_stock_in_selected_uom) || 0;
+      const delta = qf - cur;
+      const cls = !b.is_counted ? '' :
+                  (Math.abs(delta) < 0.001 ? 'matched' : (delta > 0 ? 'over' : 'short'));
+      return `<div class="batch-card ${cls}" style="${!b.is_counted ? 'opacity:0.5;' : ''}">
+        <div class="batch-header">
+          <span class="batch-name">${escHtml(b.batch_no)}</span>
+          <span class="pill ${b.is_counted ? 'pill-admin' : 'pill-close'}" style="font-size:10px;">
+            ${b.is_counted ? 'Counted' : 'Uncounted'}
+          </span>
+        </div>
+        <div class="batch-fields">
+          <div class="batch-field">
+            <label>Current (${escHtml(b.select_uom || b.stock_uom)})</label>
+            <div class="value">${fmtNum(cur)}</div>
+          </div>
+          <div class="batch-field">
+            <label>Found</label>
+            <div class="value" style="font-weight:700;">${b.is_counted ? fmtNum(qf) : '-'}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+
+    const remarksHtml = [
+      { title: 'User Remark', val: doc.user_remark },
+      { title: 'Admin Remark', val: doc.admin_remark },
+      { title: 'Super Admin Remark', val: doc.super_admin_remark },
+    ].filter(r => r.val).map(r => `
+      <div class="remark-card">
+        <div class="remark-card-title">${r.title}</div>
+        <div class="remark-card-body">${escHtml(r.val)}</div>
+      </div>
+    `).join('');
+
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-header">
+        <div>
+          <div class="modal-title">${escHtml(doc.item_name || doc.item)}</div>
+          <div style="font-size:12px;color:#64748b;">${escHtml(doc.name)} &middot; ${fmtDate(doc.posting_date)}</div>
+        </div>
+        ${statusPill(doc.workflow_state)}
+      </div>
+      <div class="modal-body">
+        <div class="totals-panel">
+          <div class="totals-grid">
+            <div class="total-item">
+              <div class="total-label">Current Stock</div>
+              <div class="total-value">${fmtNum(doc.total_current_stock_in_default_uom)} <span class="total-uom">${escHtml(doc.default_uom)}</span></div>
+            </div>
+            <div class="total-item">
+              <div class="total-label">Actually Found</div>
+              <div class="total-value">${fmtNum(doc.total_qty_found_in_default_uom)} <span class="total-uom">${escHtml(doc.default_uom)}</span></div>
+            </div>
+          </div>
+        </div>
+
+        ${remarksHtml}
+
+        ${canApprove ? `
+          <div class="form-group mt-3">
+            <label for="modal-remark">${remarkLabel}</label>
+            <textarea id="modal-remark" rows="2" placeholder="Add your remark (optional)"></textarea>
+          </div>
+        ` : ''}
+
+        <div class="section-header mt-3">Batches (${(batches || []).length})</div>
+        ${batchesHtml || '<p style="color:#94a3b8;font-size:13px;">No batches</p>'}
+      </div>
+      ${canApprove || canReject ? `
+        <div class="modal-footer">
+          ${canReject ? `<button class="btn btn-danger btn-sm" style="flex:1;" onclick="rejectFromModal('${escHtml(doc.name)}')">Reject</button>` : ''}
+          ${canApprove ? `<button class="btn btn-success" style="flex:2;" onclick="approveFromModal('${escHtml(doc.name)}')">Approve</button>` : ''}
+        </div>
+      ` : `<div class="modal-footer"><button class="btn btn-outline btn-full" onclick="closeModal()">Close</button></div>`}
+    `);
+  } catch (e) {
+    showModal(`<div class="modal-body"><div class="error-msg">${escHtml(e.message)}</div>
+      <div class="mt-3"><button class="btn btn-outline btn-full" onclick="closeModal()">Close</button></div></div>`);
+  }
+}
+
+async function approveFromModal(name) {
+  const remarkEl = $('#modal-remark');
+  const remark = remarkEl ? remarkEl.value.trim() : '';
+
+  showToast('Approving...', '');
+  try {
+    await callServer('approveSrt', name, remark);
+    closeModal();
+    showToast('Approved successfully', 'success');
+    loadDashboardRows();
+    // Refresh counts
+    try {
+      App.dashboard.counts = await callServer('getDashboardCounts');
+      $$('.tab-btn').forEach(btn => {
+        const badge = btn.querySelector('.tab-badge');
+        if (badge) badge.textContent = App.dashboard.counts[btn.dataset.tab] || 0;
+      });
+    } catch(_) {}
+  } catch (e) {
+    showToast(e.message || 'Approve failed', 'error', 5000);
+  }
+}
+
+async function rejectFromModal(name) {
+  const reason = prompt('Reason for rejection (required):');
+  if (!reason || !reason.trim()) {
+    showToast('Rejection reason is required', 'warning');
+    return;
+  }
+  showToast('Rejecting...', '');
+  try {
+    await callServer('rejectSrt', name, reason.trim());
+    closeModal();
+    showToast('Rejected', 'success');
+    loadDashboardRows();
+    try {
+      App.dashboard.counts = await callServer('getDashboardCounts');
+      $$('.tab-btn').forEach(btn => {
+        const badge = btn.querySelector('.tab-badge');
+        if (badge) badge.textContent = App.dashboard.counts[btn.dataset.tab] || 0;
+      });
+    } catch(_) {}
+  } catch (e) {
+    showToast(e.message || 'Reject failed', 'error', 5000);
+  }
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// §10. CREATE SRT FORM
+// ═════════════════════════════════════════════════════════════════
+
+function resetForm() {
+  App.form = {
+    item: '', item_name: '', default_warehouse: '',
+    posting_date: new Date().toISOString().slice(0, 10),
+    posting_time: new Date().toTimeString().slice(0, 8),
+    default_uom: '', higher_uom: '', higher_uom_cf: 1,
+    total_current_stock_in_default_uom: 0,
+    total_current_stock_in_higher_uom: 0,
+    total_qty_found_in_default_uom: 0,
+    total_qty_found_in_higher_uom: 0,
+    batches: [],
+    company: '',
+    name: null, modified: null,
+    user_remark: '',
+  };
+}
+
+async function renderCreateForm() {
+  resetForm();
+
+  // Load company from form meta
+  try {
+    const meta = await callServer('getFormMeta');
+    // Try to get default company
+  } catch(_) {}
+
+  const area = $('#content-area');
+  area.innerHTML = `
+    <div class="form-group">
+      <label>Item</label>
+      <div class="search-wrap">
+        <input type="text" id="item-search" placeholder="Search item code or name..." autocomplete="off">
+        <div id="item-results" class="search-results"></div>
+      </div>
+    </div>
+
+    <div class="form-group mt-3">
+      <label>Warehouse</label>
+      <div class="search-wrap">
+        <input type="text" id="wh-search" placeholder="Search warehouse..." autocomplete="off">
+        <div id="wh-results" class="search-results"></div>
+      </div>
+    </div>
+
+    <div class="flex gap-2 mt-3" style="gap:10px;">
+      <div class="form-group" style="flex:1;">
+        <label>Posting Date</label>
+        <input type="date" id="form-posting-date" value="${App.form.posting_date}">
+      </div>
+      <div class="form-group" style="flex:1;">
+        <label>Posting Time</label>
+        <input type="time" id="form-posting-time" value="${App.form.posting_time}" step="1">
+      </div>
+    </div>
+
+    <div id="form-totals" class="mt-3" style="display:none;"></div>
+    <div id="form-batches" class="mt-3"></div>
+
+    <div class="form-group mt-3" id="form-remark-wrap" style="display:none;">
+      <label>User Remark</label>
+      <textarea id="form-user-remark" rows="2" placeholder="Optional notes..."></textarea>
+    </div>
+
+    <div id="form-actions" class="mt-3" style="display:none;">
+      <button class="btn btn-primary btn-full mb-2" id="btn-save" onclick="saveForm()">
+        <span class="btn-text">Save as Draft</span>
+        <div class="btn-spinner spinner-sm"></div>
+      </button>
+      <button class="btn btn-success btn-full" id="btn-submit" onclick="submitForm()">
+        <span class="btn-text">Save & Submit</span>
+        <div class="btn-spinner spinner-sm"></div>
+      </button>
+    </div>
+  `;
+
+  bindFormSearch();
+}
+
+function bindFormSearch() {
+  // Item search
+  const itemInput = $('#item-search');
+  const itemResults = $('#item-results');
+  const searchItemsFn = debounce(async (txt) => {
+    if (txt.length < 2) { itemResults.classList.remove('show'); return; }
+    try {
+      const items = await callServer('searchItems', txt);
+      if (items.length === 0) {
+        itemResults.innerHTML = '<div class="search-result-item" style="color:#94a3b8;">No items found</div>';
+      } else {
+        itemResults.innerHTML = items.map(it =>
+          `<div class="search-result-item" data-code="${escHtml(it.name)}">
+            <strong>${escHtml(it.name)}</strong>
+            <small>${escHtml(it.item_name || '')}</small>
+          </div>`
+        ).join('');
+      }
+      itemResults.classList.add('show');
+    } catch(e) {
+      itemResults.innerHTML = `<div class="search-result-item" style="color:#e11d48;">${escHtml(e.message)}</div>`;
+      itemResults.classList.add('show');
+    }
+  }, 300);
+
+  itemInput.addEventListener('input', () => searchItemsFn(itemInput.value.trim()));
+  itemInput.addEventListener('focus', () => {
+    if (itemInput.value.trim().length >= 2) searchItemsFn(itemInput.value.trim());
+  });
+  itemResults.addEventListener('click', e => {
+    const item = e.target.closest('.search-result-item');
+    if (!item || !item.dataset.code) return;
+    App.form.item = item.dataset.code;
+    itemInput.value = item.dataset.code;
+    itemResults.classList.remove('show');
+    tryLoadBatches();
+  });
+
+  // Warehouse search
+  const whInput = $('#wh-search');
+  const whResults = $('#wh-results');
+  const searchWhFn = debounce(async (txt) => {
+    if (txt.length < 2) { whResults.classList.remove('show'); return; }
+    try {
+      const whs = await callServer('searchWarehouses', txt);
+      if (whs.length === 0) {
+        whResults.innerHTML = '<div class="search-result-item" style="color:#94a3b8;">No warehouses found</div>';
+      } else {
+        whResults.innerHTML = whs.map(w =>
+          `<div class="search-result-item" data-name="${escHtml(w.name)}">${escHtml(w.name)}</div>`
+        ).join('');
+      }
+      whResults.classList.add('show');
+    } catch(e) {
+      whResults.innerHTML = `<div class="search-result-item" style="color:#e11d48;">${escHtml(e.message)}</div>`;
+      whResults.classList.add('show');
+    }
+  }, 300);
+
+  whInput.addEventListener('input', () => searchWhFn(whInput.value.trim()));
+  whInput.addEventListener('focus', () => {
+    if (whInput.value.trim().length >= 2) searchWhFn(whInput.value.trim());
+  });
+  whResults.addEventListener('click', e => {
+    const wh = e.target.closest('.search-result-item');
+    if (!wh || !wh.dataset.name) return;
+    App.form.default_warehouse = wh.dataset.name;
+    whInput.value = wh.dataset.name;
+    whResults.classList.remove('show');
+    tryLoadBatches();
+  });
+
+  // Close dropdowns on outside tap
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#item-search') && !e.target.closest('#item-results')) {
+      itemResults.classList.remove('show');
+    }
+    if (!e.target.closest('#wh-search') && !e.target.closest('#wh-results')) {
+      whResults.classList.remove('show');
+    }
+  });
+}
+
+async function tryLoadBatches() {
+  if (!App.form.item || !App.form.default_warehouse) return;
+
+  const batchArea = $('#form-batches');
+  batchArea.innerHTML = '<div class="loading-center"><div class="spinner"></div></div>';
+
+  try {
+    const postDate = $('#form-posting-date').value || null;
+    const postTime = $('#form-posting-time').value || null;
+    const d = await callServer('getItemDefaults',
+      App.form.item, App.form.default_warehouse, postDate, postTime);
+
+    App.form.item_name = d.item_name;
+    App.form.default_uom = d.default_uom;
+    App.form.higher_uom = d.higher_uom;
+    App.form.higher_uom_cf = d.higher_uom_cf || 1;
+    App.form.total_current_stock_in_default_uom = d.total_current_stock_in_default_uom;
+    App.form.total_current_stock_in_higher_uom = d.total_current_stock_in_higher_uom;
+    App.form.total_qty_found_in_default_uom = d.total_current_stock_in_default_uom;
+    App.form.total_qty_found_in_higher_uom = d.total_current_stock_in_higher_uom;
+    App.form.batches = (d.batches || []).map(b => ({
+      ...b,
+      is_counted: 0,
+      qty_found: 0,
+    }));
+
+    renderFormTotals();
+    renderFormBatches();
+
+    $('#form-totals').style.display = '';
+    $('#form-actions').style.display = '';
+    $('#form-remark-wrap').style.display = '';
+
+    if (App.form.batches.length === 0) {
+      showToast('No batches with positive stock found', 'warning');
+    }
+  } catch (e) {
+    batchArea.innerHTML = `<div class="error-msg">${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderFormTotals() {
+  const f = App.form;
+  const delta = f.total_qty_found_in_default_uom - f.total_current_stock_in_default_uom;
+  const deltaClass = Math.abs(delta) < 0.001 ? 'delta-matched' : (delta > 0 ? 'delta-over' : 'delta-short');
+
+  $('#form-totals').innerHTML = `
+    <div class="totals-panel">
+      <div class="totals-grid">
+        <div class="total-item">
+          <div class="total-label">Current Stock</div>
+          <div class="total-value">${fmtNum(f.total_current_stock_in_default_uom)}</div>
+          <div class="total-uom">${escHtml(f.default_uom)}</div>
+        </div>
+        <div class="total-item">
+          <div class="total-label">Actually Found</div>
+          <div class="total-value ${deltaClass}">${fmtNum(f.total_qty_found_in_default_uom)}</div>
+          <div class="total-uom">${escHtml(f.default_uom)}</div>
+        </div>
+        <div class="total-item">
+          <div class="total-label">Current (${escHtml(f.higher_uom)})</div>
+          <div class="total-value">${fmtNum(f.total_current_stock_in_higher_uom)}</div>
+        </div>
+        <div class="total-item">
+          <div class="total-label">Found (${escHtml(f.higher_uom)})</div>
+          <div class="total-value ${deltaClass}">${fmtNum(f.total_qty_found_in_higher_uom)}</div>
+        </div>
+      </div>
+      <div class="card-row mt-2">
+        <span class="card-label">Delta</span>
+        <span class="card-value ${deltaClass}">${delta >= 0 ? '+' : ''}${fmtNum(delta)} ${escHtml(f.default_uom)}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderFormBatches() {
+  const batchArea = $('#form-batches');
+  const batches = App.form.batches || [];
+
+  if (batches.length === 0) {
+    batchArea.innerHTML = '<p style="color:#94a3b8;font-size:13px;text-align:center;">No batches to show</p>';
+    return;
+  }
+
+  batchArea.innerHTML = `
+    <div class="section-header">Batches (${batches.length})</div>
+    ${batches.map((b, i) => {
+      const checked = b.is_counted ? 'checked' : '';
+      const cardCls = b.is_counted ? 'checked' : '';
+      return `<div class="batch-card ${cardCls}" data-idx="${i}">
+        <div class="batch-header">
+          <span class="batch-name truncate" style="max-width:60%;">${escHtml(b.batch_no)}</span>
+          <div class="checkbox-wrap" style="padding:0;">
+            <label style="font-size:12px;color:#64748b;">Reconcile</label>
+            <input type="checkbox" class="batch-counted-cb" data-idx="${i}" ${checked}>
+          </div>
+        </div>
+        <div class="batch-fields">
+          <div class="batch-field">
+            <label>Current (${escHtml(b.select_uom || App.form.higher_uom || App.form.default_uom)})</label>
+            <div class="value">${fmtNum(b.current_stock_in_selected_uom)}</div>
+          </div>
+          <div class="batch-field">
+            <label>Qty Found</label>
+            <input type="number" class="batch-qty-input" data-idx="${i}"
+              value="${b.is_counted ? b.qty_found : ''}"
+              step="0.001" min="0"
+              placeholder="${b.is_counted ? '0' : '-'}"
+              ${!b.is_counted ? 'disabled' : ''}>
+          </div>
+          <div class="batch-field">
+            <label>Stock UOM Qty</label>
+            <div class="value">${fmtNum(b.current_stock_in_stock_uom)} ${escHtml(b.stock_uom || '')}</div>
+          </div>
+          <div class="batch-field">
+            <label>Conv. Factor</label>
+            <div class="value">${fmtNum(b.conversion_factor, 2)}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('')}
+  `;
+
+  // Bind events
+  batchArea.querySelectorAll('.batch-counted-cb').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const idx = parseInt(cb.dataset.idx);
+      App.form.batches[idx].is_counted = cb.checked ? 1 : 0;
+      if (!cb.checked) App.form.batches[idx].qty_found = 0;
+      recomputeFormTotals();
+      renderFormBatches(); // re-render to enable/disable input
+    });
+  });
+
+  batchArea.querySelectorAll('.batch-qty-input').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const idx = parseInt(inp.dataset.idx);
+      App.form.batches[idx].qty_found = parseFloat(inp.value) || 0;
+      if (!App.form.batches[idx].is_counted) {
+        App.form.batches[idx].is_counted = 1;
+      }
+      recomputeFormTotals();
+    });
+  });
+}
+
+function recomputeFormTotals() {
+  let totalCurrent = 0, totalFound = 0;
+  for (const b of App.form.batches) {
+    const cur = Number(b.current_stock_in_stock_uom) || 0;
+    totalCurrent += cur;
+    if (b.is_counted) {
+      const cf = Number(b.conversion_factor) || 1;
+      totalFound += (Number(b.qty_found) || 0) * cf;
+    } else {
+      totalFound += cur;
+    }
+  }
+  App.form.total_current_stock_in_default_uom = totalCurrent;
+  App.form.total_qty_found_in_default_uom = totalFound;
+  const hcf = Number(App.form.higher_uom_cf) || 1;
+  App.form.total_current_stock_in_higher_uom = totalCurrent / hcf;
+  App.form.total_qty_found_in_higher_uom = totalFound / hcf;
+  renderFormTotals();
+}
+
+async function saveForm() {
+  if (!validateForm()) return;
+  const btn = $('#btn-save');
+  btn.classList.add('loading'); btn.disabled = true;
+
+  try {
+    const payload = buildFormPayload();
+    const result = await callServer('saveSrtForm', payload, App.form.name || null);
+    App.form.name = result.name;
+    App.form.modified = result.modified;
+    showToast('Saved: ' + result.name, 'success');
+  } catch (e) {
+    showToast(e.message || 'Save failed', 'error', 5000);
+  } finally {
+    btn.classList.remove('loading'); btn.disabled = false;
+  }
+}
+
+async function submitForm() {
+  if (!validateForm()) return;
+
+  // Check at least one row is ticked
+  const ticked = App.form.batches.filter(b => b.is_counted);
+  if (ticked.length === 0) {
+    showToast('Tick "Reconcile" on at least one batch', 'warning');
+    return;
+  }
+
+  const btn = $('#btn-submit');
+  btn.classList.add('loading'); btn.disabled = true;
+
+  try {
+    // Save first if not yet saved
+    if (!App.form.name) {
+      const payload = buildFormPayload();
+      const saveResult = await callServer('saveSrtForm', payload, null);
+      App.form.name = saveResult.name;
+      App.form.modified = saveResult.modified;
+    } else {
+      // Save latest changes
+      const payload = buildFormPayload();
+      const saveResult = await callServer('saveSrtForm', payload, App.form.name);
+      App.form.modified = saveResult.modified;
+    }
+
+    // Now submit
+    const result = await callServer('submitSrtForm', App.form.name);
+    const state = result.workflow_state || '';
+    if (state === 'Approved By System') {
+      showToast('All batches matched — Auto-Approved by System!', 'success', 4000);
+    } else {
+      showToast('Submitted: ' + App.form.name + ' → ' + state, 'success');
+    }
+
+    // Go back to dashboard
+    navigateTo('dashboard');
+  } catch (e) {
+    showToast(e.message || 'Submit failed', 'error', 5000);
+  } finally {
+    btn.classList.remove('loading'); btn.disabled = false;
+  }
+}
+
+function validateForm() {
+  if (!App.form.item) { showToast('Select an item', 'warning'); return false; }
+  if (!App.form.default_warehouse) { showToast('Select a warehouse', 'warning'); return false; }
+  return true;
+}
+
+function buildFormPayload() {
+  const remarkEl = $('#form-user-remark');
+  return {
+    item: App.form.item,
+    default_warehouse: App.form.default_warehouse,
+    posting_date: $('#form-posting-date').value || App.form.posting_date,
+    posting_time: $('#form-posting-time').value || App.form.posting_time,
+    user_remark: remarkEl ? remarkEl.value : '',
+    batches: App.form.batches.map(b => ({
+      batch_no: b.batch_no,
+      item_code: b.item_code || App.form.item,
+      warehouse: b.warehouse || App.form.default_warehouse,
+      stock_uom: b.stock_uom,
+      select_uom: b.select_uom,
+      conversion_factor: b.conversion_factor,
+      current_stock_in_stock_uom: b.current_stock_in_stock_uom,
+      current_stock_in_selected_uom: b.current_stock_in_selected_uom,
+      valuation_rate: b.valuation_rate,
+      qty_found: b.is_counted ? b.qty_found : 0,
+      is_counted: b.is_counted ? 1 : 0,
+      item_name_selected: b.item_name_selected || App.form.item_name,
+    })),
+    modified: App.form.modified,
+  };
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// §11. HISTORY
+// ═════════════════════════════════════════════════════════════════
+
+async function renderHistory() {
+  const area = $('#content-area');
+  area.innerHTML = '<div class="loading-center"><div class="spinner"></div></div>';
+
+  try {
+    // If admin/super admin, show all; else show own
+    let rows;
+    if (isAdmin() || isSuperAdmin()) {
+      rows = await callServer('getAllSrtHistory', 100, 0);
+    } else {
+      rows = await callServer('getSrtHistory', 100, 0);
+    }
+    App.history.rows = rows;
+
+    if (rows.length === 0) {
+      area.innerHTML = `<div class="empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+        <h3>No SRT records yet</h3>
+        <p>Create your first Stock Reconciliation to see it here.</p>
+      </div>`;
+      return;
+    }
+
+    area.innerHTML = `
+      <div class="refresh-bar">
+        <button onclick="renderHistory()">Refresh</button>
+      </div>
+      ${rows.map(r => {
+        const pill = statusPill(r.workflow_state);
+        const stateText = r.docstatus === 2 ? '<span class="pill pill-cancelled">Cancelled</span>' : pill;
+        return `<div class="card" onclick="viewSrt('${escHtml(r.name)}')">
+          <div class="flex items-center justify-between">
+            <div style="min-width:0;flex:1;">
+              <div class="card-title truncate">${escHtml(r.item_name || r.item)}</div>
+              <div class="card-subtitle truncate">${escHtml(r.name)}</div>
+            </div>
+            ${stateText}
+          </div>
+          <div class="card-row" style="margin-top:6px;">
+            <span class="card-label">${escHtml(r.default_warehouse || '')}</span>
+            <span class="card-label">${fmtDate(r.posting_date)}</span>
+          </div>
+        </div>`;
+      }).join('')}
+    `;
+  } catch (e) {
+    if (e.message && e.message.includes('SESSION_EXPIRED')) {
+      showToast('Session expired', 'error');
+      showPage('page-login');
+      return;
+    }
+    area.innerHTML = `<div class="empty-state"><h3>Error</h3><p>${escHtml(e.message)}</p></div>`;
+  }
+}
+</script>

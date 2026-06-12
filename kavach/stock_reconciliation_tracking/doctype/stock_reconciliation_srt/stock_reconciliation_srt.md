@@ -66,10 +66,19 @@ ERPNext's native Stock Reconciliation is fine for small inventories. At chaizup 
 ```
 new() / autoname                  → SRT-RECO-.YYYY.-.#####
 validate() (every save)           → 9 gates (see below)
-on_submit (workflow Draft → ?)
-  if flags.all_matched_no_delta:
-    _route_to_system_approved()   → ws="Approved By System", auto-stamp both approvers,
+on_update (after every save)
+  if flags.all_matched_no_delta AND docstatus==0:
+    _reverify_live_stock()        → re-fetch LIVE batch qty from SLE at posting_date/time
+                                    compare vs qty_found at precision=3
+    if still matches:
+      db_set(docstatus=1)         → auto-submit
+      _route_to_system_approved() → ws="Approved By System", auto-stamp both approvers,
                                     auto-fill both remarks (only if empty), NO ERPNext SR
+    else:
+      warn user, skip auto-approve
+on_submit (workflow Draft → ?, fallback if manual submit)
+  if flags.all_matched_no_delta:
+    _route_to_system_approved()   → same as above (fallback for workflow-triggered submit)
   else:
     _create_erpnext_sr_draft()    → builds + inserts ERPNext SR in DRAFT
                                     with sr.set_posting_time = 1 (v0.0.9.26 guard)
@@ -101,11 +110,14 @@ on_cancel
 | 4 | `_enforce_no_duplicate_rows` | Each (batch_no, warehouse) tuple appears at most once. |
 | 5 | `_enforce_no_duplicate_open_srt_for_item` | Blocks new SRT for an item that already has one in a non-complete workflow state (anything except "Super Admin Approval" / "Approved By System" / docstatus=2). |
 | 6 | `_enforce_min_gap_between_srts` | `SRT Settings.gap_between_stock_reconciliation_days` throttle (symmetric, includes docstatus=1 and 2 priors). |
-| 7 | `_classify_zero_delta_ticks` | Routes between Case 1 (all matched → flags.all_matched_no_delta), Case 2 (mixed → untick matches), and normal flow (all real deltas). Must run BEFORE the next gate. |
+| 7 | `_classify_zero_delta_ticks` | Routes between Case 1 (all matched → flags.all_matched_no_delta), Case 2 (mixed → untick matches), and normal flow (all real deltas). Rounds both qty_found and current_stock_in_selected_uom to display precision (3) before comparing (2026-06-12 precision fix). Must run BEFORE the next gate. |
 | 8 | `_enforce_at_least_one_reconcile_ticked` | Block save when zero rows have `is_counted = 1`. Skipped when item+warehouse not yet set (mid-fill). |
 | 9 | `_enforce_remark_field_permissions` | Field-level write gates per role + workflow_state. System Manager + Administrator bypass. Detects changes via `get_doc_before_save` to avoid blocking re-saves where the locked field wasn't actually touched. |
 
-Then `_recompute_totals()` aggregates child rows into the 4 parent total fields.
+Then `_recompute_totals()` aggregates child rows into the 4 parent total fields:
+- `total_current_stock_in_default_uom` = Σ `current_stock_in_stock_uom` (all rows)
+- `total_qty_found_in_default_uom` = for `is_counted=1` rows: Σ `qty_found × conversion_factor`; for uncounted rows: Σ `current_stock_in_stock_uom`
+- Higher UOM variants = above ÷ `higher_uom_cf`
 
 ## 8. Restricted areas (canonical list)
 
@@ -140,7 +152,7 @@ done
 ## 10. Sync block
 
 ```
-DOCTYPE:      Stock Reconciliation SRT @ v0.0.9.26 (2026-05-25)
+DOCTYPE:      Stock Reconciliation SRT @ v0.0.9.35 (2026-06-12)
 SUBMITTABLE:  yes (docstatus 0=Draft, 1=Submitted, 2=Cancelled)
 WORKFLOW:     Stock Reconciliation SRT Workflow (Draft → Admin Approval → Super Admin Approval → Close; Approved By System short-circuits Case 1)
 NAMING:       SRT-RECO-.YYYY.-.#####
@@ -150,14 +162,21 @@ POSTING-TIMESTAMP GUARD (v0.0.9.26):
   _create_erpnext_sr_draft: sr.set_posting_time = 1 BEFORE posting_date/time
   Without it, validate_posting_time rewrites both fields to now() on insert + submit
 
+CASE1-ON-SAVE (v0.0.9.35):
+  _classify_zero_delta_ticks now rounds to precision=3 before comparing (precision fix)
+  on_update auto-submits Case 1 on SAVE (not just on manual submit via workflow action)
+  _reverify_live_stock re-fetches SLE batch qty at posting_date/time before auto-approving
+
 LIFECYCLE:
-  validate (9 gates) → on_submit (Case1 short-circuit OR _create_erpnext_sr_draft + mirror rate + advance to Admin Approval)
+  validate (9 gates) → on_update (Case1 auto-submit on save with live re-verify)
+  on_submit (fallback Case1 short-circuit OR _create_erpnext_sr_draft + mirror rate + advance to Admin Approval)
   submit_linked_sr (Srt Super Admin) → SABB patches + Stock Settings toggle + sr._submit() → advance to Super Admin Approval
   on_cancel → if SR draft delete; if SR submitted cascade-cancel (Super Admin / System Manager only)
 
 KEY HELPERS:
   _resolve_row_cf  — 4-step fallback for child row conversion factor
   _recompute_totals — Σ over rows, qty_found_in_stock_uom if is_counted else current_stock_in_stock_uom
+  _reverify_live_stock — re-fetch SLE batch qty at posting_date/time, compare at precision=3
   _apply_validation_patches — 7 SABB / SLE patches per Quirk #2
   _can_submit_linked_sr — Admin user / System Manager / Srt Super Admin
 

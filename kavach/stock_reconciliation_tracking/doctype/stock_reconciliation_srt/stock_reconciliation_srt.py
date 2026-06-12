@@ -183,6 +183,78 @@ class StockReconciliationSRT(Document):
         self._enforce_remark_field_permissions()
         self._recompute_totals()
 
+    def on_update(self):
+        """Auto-submit + system-approve when Case 1 is detected on SAVE.
+
+        If _classify_zero_delta_ticks (in validate) flagged
+        all_matched_no_delta AND the document is still Draft (docstatus=0),
+        re-verify against LIVE stock data, then auto-submit and route to
+        "Approved By System" — no admin/super-admin intervention needed.
+
+        LIVE RE-VERIFICATION (2026-06-12): before auto-approving, re-fetch
+        each ticked batch's current qty from SLE at the SRT's posting
+        timestamp. If any batch's live qty no longer matches qty_found at
+        display precision, abort auto-approve and warn the user. This
+        prevents false approvals when stock changed between form load and
+        save.
+
+        Uses db_set to bypass workflow transition validation (there is no
+        explicit "Draft → Approved By System" action in the workflow; the
+        state is a system-generated shortcut).
+
+        RESTRICT: do NOT remove the docstatus==0 guard — on_update fires
+        on every save, including re-saves of already-submitted docs.
+        Without it, a re-save would re-trigger the auto-approve path.
+        """
+        if (getattr(self.flags, "all_matched_no_delta", False)
+                and self.docstatus == 0):
+            if self._reverify_live_stock():
+                self.db_set("docstatus", 1, update_modified=False)
+                self._route_to_system_approved()
+            else:
+                self.flags.all_matched_no_delta = False
+                frappe.msgprint(
+                    _("Stock levels changed since the form was loaded. "
+                      "Auto-approve skipped — please re-select the item "
+                      "to refresh batch data and try again."),
+                    indicator="orange", alert=True,
+                )
+
+    def _reverify_live_stock(self):
+        """Re-check each ticked row's qty_found against LIVE batch qty
+        from the stock ledger, scoped to this SRT's posting_date/time.
+
+        Returns True if ALL ticked rows still match at display precision.
+        Returns False if any row's live qty no longer equals qty_found.
+        """
+        from kavach.stock_reconciliation_tracking.api import _as_of_clause
+
+        DISPLAY_PRECISION = 3
+        as_of_clause, as_of_params = _as_of_clause(
+            self.posting_date, self.posting_time,
+        )
+        for r in (self.batches or []):
+            if not r.is_counted:
+                continue
+            live_stock_qty = flt(frappe.db.sql(f"""
+                SELECT IFNULL(SUM(sbe.qty), 0)
+                FROM `tabStock Ledger Entry` sle
+                JOIN `tabSerial and Batch Entry` sbe
+                     ON sbe.parent = sle.serial_and_batch_bundle
+                WHERE sle.item_code = %s
+                  AND sle.warehouse = %s
+                  AND sbe.batch_no = %s
+                  AND sle.is_cancelled = 0
+                  {as_of_clause}
+            """, (self.item, r.warehouse, r.batch_no, *as_of_params))[0][0])
+            cf = self._resolve_row_cf(r)
+            live_in_selected = flt(live_stock_qty / cf if cf else live_stock_qty,
+                                   DISPLAY_PRECISION)
+            qf = flt(r.qty_found, DISPLAY_PRECISION)
+            if abs(qf - live_in_selected) >= 0.0001:
+                return False
+        return True
+
     def on_submit(self):
         """SRT submit — TWO PATHS (2026-05-22):
 
@@ -346,17 +418,13 @@ class StockReconciliationSRT(Document):
 
     def _classify_zero_delta_ticks(self):
         """Two-mode handler for ticked rows where Qty Found equals Current
-        Stock (Selected UOM) within display precision (epsilon 0.001).
+        Stock (Selected UOM) at display precision (precision=3).
 
         Per 2026-05-22 spec:
 
         **Case 1 — ALL ticked rows match (no delta anywhere).**
-            Allow save/submit but skip the ERPNext SR creation entirely.
-            on_submit reads `self.flags.all_matched_no_delta` and routes
-            the doc to the "Approved By System" workflow state instead
-            of the normal Draft → Admin Approval path. No admin / super
-            admin approval needed. Both approval remarks are auto-filled
-            with a "all batches match" system note.
+            on_update auto-submits the doc and routes to "Approved By
+            System" — no admin intervention needed. No ERPNext SR created.
 
         **Case 2 — MIXED (some matches, some real deltas).**
             Silently untick the matching rows IN PLACE (set is_counted=0).
@@ -364,21 +432,18 @@ class StockReconciliationSRT(Document):
             This catches operator error (ticking too many rows) without
             blocking the save.
 
-        Replaces the previous `_enforce_no_zero_delta_on_ticked_rows`
-        which threw on ANY zero-delta tick — too strict for legitimate
-        "I counted all and confirmed nothing changed" workflows.
+        PRECISION FIX (2026-06-12): Both qty_found and
+        current_stock_in_selected_uom are rounded to display precision
+        (3 decimal places) before comparison. This guarantees the
+        comparison matches EXACTLY what the user sees on screen. Raw
+        float values can differ beyond display precision due to division
+        artifacts (e.g., 282.5604/1000 = 0.2825604 stored vs 0.283
+        displayed).
 
-        Epsilon = 0.001 matches the field's precision=3 (display digits).
-        Without this tolerance, the autopop value (e.g., 282.5604/1000 =
-        0.2825604) wouldn't equal the rounded display the operator sees
-        (0.283).
-
-        DON'T tighten epsilon below 0.001 — forces user to perceive
-        sub-displayable diffs.
         DON'T skip on certain workflow states — operator-edited drafts
         need this routing whenever they save.
         """
-        EPS = 0.001
+        DISPLAY_PRECISION = 3
         rows = self.batches or []
         ticked = [r for r in rows if r.is_counted]
         if not ticked:
@@ -388,9 +453,9 @@ class StockReconciliationSRT(Document):
         matches = []
         deltas  = []
         for r in ticked:
-            qf  = flt(r.qty_found)
-            cur = flt(r.current_stock_in_selected_uom)
-            if abs(qf - cur) < EPS:
+            qf  = flt(r.qty_found, DISPLAY_PRECISION)
+            cur = flt(r.current_stock_in_selected_uom, DISPLAY_PRECISION)
+            if abs(qf - cur) < 0.0001:   # float noise guard after rounding
                 matches.append(r)
             else:
                 deltas.append(r)
@@ -677,9 +742,10 @@ class StockReconciliationSRT(Document):
             seen.add(key)
 
     def _recompute_totals(self):
-        """Σ over child rows of:
-              qty_found_in_stock_uom (if row.is_counted == 1)
-              OR current_stock_in_stock_uom (if row.is_counted == 0).
+        """Σ over child rows:
+              total_current = Σ current_stock_in_stock_uom (all rows)
+              total_found   = for is_counted rows: qty_found × cf
+                              for uncounted rows:  current_stock_in_stock_uom
 
         qty_found_in_stock_uom = qty_found × row.conversion_factor.
 
