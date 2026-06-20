@@ -81,11 +81,19 @@ script, raising:
 
 > `TypeError: Not allowed source type: "NoneType".`
 
-`_ensure_standard_reports()` heals this on every migrate with a direct
-`db.set_value('Report', …, {'is_standard':'Yes','report_script':None})` —
-**not** a `get_doc().save()` (saving a standard Report in developer_mode would
-rewrite the disk `.json`/`.py`, which a migrate hook must never do).
+`_ensure_standard_reports()` heals this **purely from source** — it re-imports
+the report's committed `.json` with
+`frappe.modules.import_file.import_file_by_path(path, force=True)`, the exact
+operation `bench migrate` runs for every standard record. The `.json` declares
+`is_standard: "Yes"`, so the upserted row is always standard. **No DB field is
+poked by hand — no `db.set_value`, no `get_doc().save()`** (saving a standard
+Report in developer_mode would rewrite the disk files, which a migrate hook
+must never do). Source `.json` → import → done.
 
-Reproduced + verified 2026-06-20 on `dev.localhost`: forcing `is_standard="No"`
-re-creates the `NoneType` crash; running the heal restores `is_standard="Yes"`
-and the report runs (33 cols, clean).
+Because Frappe Cloud runs `bench migrate` on every deploy, this also runs there
+— so installing/deploying kavach on Frappe Cloud installs the report as
+standard with no manual step.
+
+Verified 2026-06-20 on `dev.localhost`: forcing `is_standard="No"` re-creates
+the `NoneType` crash; running the heal (pure `.json` re-import) restores
+`is_standard="Yes"` and the report runs (33 cols, clean).

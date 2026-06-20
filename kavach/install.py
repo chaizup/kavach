@@ -220,38 +220,54 @@ def _ensure_workflow() -> None:
 #       TypeError: Not allowed source type: "NoneType".
 #   The on-disk `execute()` is never reached.
 #
-# THE FIX (idempotent): force `is_standard = "Yes"` (and clear any stale inline
-#   `report_script`) via a direct db write — no doc save, so we never rewrite
-#   the disk `.json`/`.py`. After this, the `execute_module` path loads the
-#   module's `execute()` correctly.
+# THE FIX (source-of-truth, idempotent): re-import the report's on-disk `.json`
+#   with `import_file_by_path(..., force=True)` — the SAME operation `bench
+#   migrate` runs for every standard record. The `.json` declares
+#   `is_standard: "Yes"`, so the upserted row is always standard and runs from
+#   the module. A stale `is_standard="No"` row is corrected simply by replaying
+#   the committed source. Verified 2026-06-20: a forced `is_standard="No"` row
+#   flips back to "Yes" purely from the `.json` import — no DB field write.
 #
-# RESTRICT: keep this idempotent + a direct `db.set_value` (NOT `get_doc().save`)
-#   — saving a standard Report in developer_mode rewrites the disk files, which
-#   we must not do from a migrate hook.
+# RESTRICT: do the fix THROUGH SOURCE — `import_file_by_path` on the committed
+#   `.json`. Do NOT hand-poke fields with `db.set_value`, and do NOT
+#   `get_doc().save()` a standard Report (in developer_mode that rewrites the
+#   disk files). Source `.json` → import → done.
 # =============================================================================
 
-_STANDARD_REPORTS = ("Work Order Consumption Cost Analysis",)
+# (report_name, module_folder) — module_folder is the on-disk folder under
+# `kavach/` that holds the report's `report/<scrubbed>/` directory.
+_STANDARD_REPORTS = (
+    ("Work Order Consumption Cost Analysis", "stock_reconciliation_tracking"),
+)
 
 
 def _ensure_standard_reports() -> None:
-    """Guarantee kavach's shipped reports run from disk (is_standard='Yes')."""
-    changed = False
-    for report in _STANDARD_REPORTS:
-        if not frappe.db.exists("Report", report):
-            continue
-        vals = frappe.db.get_value(
-            "Report", report, ["is_standard", "report_script"], as_dict=True
-        ) or {}
-        updates = {}
-        if vals.get("is_standard") != "Yes":
-            updates["is_standard"] = "Yes"
-        if vals.get("report_script"):
-            updates["report_script"] = None
-        if updates:
-            frappe.db.set_value("Report", report, updates, update_modified=False)
-            changed = True
-    if changed:
-        frappe.db.commit()
+    """Install kavach's shipped reports straight FROM SOURCE.
+
+    This simply replays — for this app's reports — exactly what `bench migrate`
+    already does for every standard record: `import_file_by_path` reads the
+    report's on-disk `.json` (which declares `is_standard: "Yes"`) and upserts
+    the Report doc from it. The `.json` IS the source of truth, so the imported
+    row is always standard and runs from the on-disk module (`execute_module`),
+    never `safe_exec(None)`.
+
+    NO database field is poked by hand — no `db.set_value`. A stale or restored
+    row (e.g. `is_standard="No"` carried in from a prod backup) is corrected
+    purely by re-importing the committed source file. Idempotent + force, so it
+    is safe on every `after_install` / `after_migrate` (and on Frappe Cloud,
+    whose deploy pipeline runs `bench migrate`).
+    """
+    import os
+    from frappe.modules.import_file import import_file_by_path
+
+    for report, module_folder in _STANDARD_REPORTS:
+        path = frappe.get_app_path(
+            APP_NAME, module_folder, "report",
+            frappe.scrub(report), frappe.scrub(report) + ".json",
+        )
+        if os.path.exists(path):
+            import_file_by_path(path, force=True)
+    frappe.db.commit()
 
 
 def _ensure_workflow_state(name: str, style: str, label: str) -> None:

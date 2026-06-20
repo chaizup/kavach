@@ -79,11 +79,16 @@ appears once per (entry × consumed batch).
 | 22 | Batch Val. Rate / Stock UOM (@ SE date) | bundle `outgoing_rate` (fallback SE line `valuation_rate`) |
 | 23 | Qty Consumed (Stock UOM) | `ABS(bundle qty)` (legacy: `transfer_qty`) |
 | 24 | Total Consumed Valuation | `ABS(bundle stock_value_difference)` (fallback qty×rate) |
-| 25 | Batch Origin Type | earliest SLE `voucher_type` (raw DocType; also the Dynamic Link target for col 26) |
-| 26 | Origin Voucher No | earliest SLE `voucher_no` (Dynamic Link → col 25) |
-| 27 | Origin Voucher Type | friendly/normalised category: Stock Entry / Purchase Receipt / Work Order / **Reconciliation** |
-| 28 | Origin Voucher Purpose | the **real** purpose of the origin doc — Stock Entry.`purpose` / Stock Reconciliation.`purpose` (e.g. `Opening Stock`); PR → "Purchase Receipt" |
-| 29 | Origin Rate / Stock UOM | earliest SLE bundle `incoming_rate` |
+| 25 | Batch Origin Type **[Consumed Batch]** | earliest SLE `voucher_type` (raw DocType; also the Dynamic Link target for col 26) |
+| 26 | Origin Voucher No **[Consumed Batch]** | earliest SLE `voucher_no` (Dynamic Link → col 25) |
+| 27 | Origin Voucher Type **[Consumed Batch]** | friendly/normalised category: Stock Entry / Purchase Receipt / Work Order / **Reconciliation** |
+| 28 | Origin Voucher Purpose **[Consumed Batch]** | the **real** purpose of the origin doc — Stock Entry.`purpose` / Stock Reconciliation.`purpose` (e.g. `Opening Stock`); PR → "Purchase Receipt" |
+| 29 | Origin Rate / Stock UOM **[Consumed Batch]** | earliest SLE bundle `incoming_rate` |
+
+> All five Origin column headings end with **`[Consumed Batch]`** — these trace
+> the **consumed** material batch's origin (where it first entered stock), not
+> the produced FG batch. The suffix disambiguates them from the produced-batch
+> columns above.
 | 30 | Consumed Higher UOM | largest CF>1 for the consumed item |
 | 31 | Consumed Higher UOM CF | that conversion factor |
 | 32 | Manufacture Stock Entry | `Stock Entry.name` (provenance drill-down) |
@@ -239,12 +244,19 @@ without a disk sync), the report crashes with:
 > (Frappe takes the inline-script path `safe_exec(report_script, …)` and
 > `report_script` is `NULL`.)
 
-This is **self-healed** on every `bench migrate` by
-`kavach/install.py → _ensure_standard_reports()` (after_migrate), which forces
-`is_standard = "Yes"`. To fix on the spot without a full migrate:
+**Resolved purely from source.** `bench migrate` re-imports this report's
+on-disk `.json` (which declares `is_standard: "Yes"`) and upserts the row as
+standard — no manual step. Frappe Cloud runs `bench migrate` on every deploy,
+so deploying the app installs/repairs the report there too.
+
+`kavach/install.py → _ensure_standard_reports()` (after_install + after_migrate)
+belt-and-suspenders the same thing: it re-imports the committed `.json` via
+`import_file_by_path(..., force=True)`. It does **NOT** hand-write
+`is_standard` with `db.set_value` — the `.json` is the single source of truth;
+re-importing it is what flips a stale `No` back to `Yes`. To fix on the spot:
 
 ```bash
 bench --site <site> execute kavach.install._ensure_standard_reports
-# or
+# or the raw equivalent — re-import the source .json:
 bench --site <site> reload-doc kavach report work_order_consumption_cost_analysis
 ```

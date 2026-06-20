@@ -1,7 +1,7 @@
 {
  "app": "kavach",
  "charts": [],
- "content": "[]",
+ "content": "[{\"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\">\\ud83d\\udee1\\ufe0f Kavach \\u2014 Stock Reconciliation</span>\", \"level\": 3, \"col\": 12}}, {\"type\": \"paragraph\", \"data\": {\"text\": \"Count \\u2192 audit \\u2192 approve. An ERPNext Stock Reconciliation wrapper with batch auto-populate + cost analytics.\", \"col\": 12}}, {\"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"type\": \"header\", \"data\": {\"text\": \"Shortcuts\", \"level\": 4, \"col\": 12}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SRT Dashboard\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Stock Reconciliation SRT\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SRT Settings\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"WO Consumption Cost Analysis\", \"col\": 3}}, {\"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"type\": \"card\", \"data\": {\"card_name\": \"Stock Reconciliation\", \"col\": 4}}, {\"type\": \"card\", \"data\": {\"card_name\": \"Reports\", \"col\": 4}}, {\"type\": \"card\", \"data\": {\"card_name\": \"Setup\", \"col\": 4}}]",
  "creation": "2026-05-21 09:23:33.049749",
  "custom_blocks": [],
  "docstatus": 0,
@@ -18,7 +18,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Stock Reconciliation",
-   "link_count": 0,
+   "link_count": 1,
    "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
@@ -36,8 +36,29 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "Setup",
+   "label": "Reports",
+   "link_count": 1,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Work Order Consumption Cost Analysis",
    "link_count": 0,
+   "link_to": "Work Order Consumption Cost Analysis",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link",
+   "icon": "dashboard",
+   "description": "Per-batch manufacturing consumption cost + batch-origin traceability (stock UOM)."
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Setup",
+   "link_count": 2,
    "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
@@ -63,7 +84,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-05-23 20:17:24.123244",
+ "modified": "2026-06-20 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Stock Reconciliation Tracking",
  "name": "Kavach",
@@ -75,22 +96,38 @@
  "sequence_id": 0.0,
  "shortcuts": [
   {
+   "color": "#16a34a",
    "doc_view": "",
+   "icon": "dashboard",
+   "label": "SRT Dashboard",
+   "link_to": "srt-dashboard",
+   "type": "Page"
+  },
+  {
+   "color": "#2563eb",
+   "doc_view": "",
+   "icon": "file",
    "label": "Stock Reconciliation SRT",
    "link_to": "Stock Reconciliation SRT",
    "type": "DocType"
   },
   {
+   "color": "#64748b",
    "doc_view": "",
+   "icon": "setting",
    "label": "SRT Settings",
    "link_to": "SRT Settings",
    "type": "DocType"
   },
   {
+   "color": "#7c3aed",
    "doc_view": "",
-   "label": "SRT Dashboard",
-   "link_to": "srt-dashboard",
-   "type": "Page"
+   "icon": "dashboard",
+   "label": "WO Consumption Cost Analysis",
+   "link_to": "Work Order Consumption Cost Analysis",
+   "restrict_to_domain": "",
+   "stats_filter": "",
+   "type": "Report"
   }
  ],
  "title": "Kavach",

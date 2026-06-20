@@ -133,11 +133,11 @@ def get_columns():
 		{"label": _("Qty Consumed (Stock UOM)"), "fieldname": "qty_consumed", "fieldtype": "Float", "width": 160, "precision": 3},
 		{"label": _("Total Consumed Valuation"), "fieldname": "total_consumed_valuation", "fieldtype": "Currency", "width": 160},
 		# ---- Consumed batch ORIGIN block ------------------------------------
-		{"label": _("Batch Origin Type"), "fieldname": "origin_voucher_type", "fieldtype": "Data", "width": 150},
-		{"label": _("Origin Voucher No"), "fieldname": "origin_voucher", "fieldtype": "Dynamic Link", "options": "origin_voucher_type", "width": 180},
-		{"label": _("Origin Voucher Type"), "fieldname": "origin_voucher_type_label", "fieldtype": "Data", "width": 150},
-		{"label": _("Origin Voucher Purpose"), "fieldname": "origin_voucher_purpose", "fieldtype": "Data", "width": 160},
-		{"label": _("Origin Rate / Stock UOM"), "fieldname": "origin_rate", "fieldtype": "Currency", "width": 150, "precision": 4},
+		{"label": _("Batch Origin Type [Consumed Batch]"), "fieldname": "origin_voucher_type", "fieldtype": "Data", "width": 190},
+		{"label": _("Origin Voucher No [Consumed Batch]"), "fieldname": "origin_voucher", "fieldtype": "Dynamic Link", "options": "origin_voucher_type", "width": 210},
+		{"label": _("Origin Voucher Type [Consumed Batch]"), "fieldname": "origin_voucher_type_label", "fieldtype": "Data", "width": 200},
+		{"label": _("Origin Voucher Purpose [Consumed Batch]"), "fieldname": "origin_voucher_purpose", "fieldtype": "Data", "width": 210},
+		{"label": _("Origin Rate / Stock UOM [Consumed Batch]"), "fieldname": "origin_rate", "fieldtype": "Currency", "width": 210, "precision": 4},
 		# ---- Consumed item higher UOM ---------------------------------------
 		{"label": _("Consumed Higher UOM"), "fieldname": "consumed_higher_uom", "fieldtype": "Data", "width": 130},
 		{"label": _("Consumed Higher UOM CF"), "fieldname": "consumed_higher_uom_cf", "fieldtype": "Float", "width": 150, "precision": 3},
