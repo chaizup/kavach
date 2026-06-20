@@ -224,3 +224,27 @@ bench --site dev.localhost execute \
    must stay in lockstep.
 4. After editing the `.json` metadata, re-sync with
    `bench --site <site> migrate` (or `import_file_by_path` for just this file).
+
+## 11. Built-in / standard report (must stay `is_standard = "Yes"`)
+
+This is a **built-in report shipped with kavach's source code** — its `execute()`
+lives in the on-disk `.py` and Frappe runs it via the `execute_module` path. The
+`tabReport` row **must** have `is_standard = "Yes"`.
+
+If the row is ever left as `is_standard = "No"` with an empty `report_script`
+(a stale row from a prod backup restore, or a record opened/created in desk
+without a disk sync), the report crashes with:
+
+> `TypeError: Not allowed source type: "NoneType".`
+> (Frappe takes the inline-script path `safe_exec(report_script, …)` and
+> `report_script` is `NULL`.)
+
+This is **self-healed** on every `bench migrate` by
+`kavach/install.py → _ensure_standard_reports()` (after_migrate), which forces
+`is_standard = "Yes"`. To fix on the spot without a full migrate:
+
+```bash
+bench --site <site> execute kavach.install._ensure_standard_reports
+# or
+bench --site <site> reload-doc kavach report work_order_consumption_cost_analysis
+```

@@ -1,11 +1,16 @@
 # =============================================================================
 # CONTEXT: kavach install / migrate hooks.
 #
-#   The only purpose of this module is a SELF-HEALING defensive hook that
-#   guarantees `kavach` is present in the site's
-#   `tabInstalled Application` table even when a production DB backup is
-#   restored on top of a dev site that already has this app's DocTypes /
-#   Module Def / files on disk.
+#   This module is a set of SELF-HEALING defensive hooks (after_install +
+#   after_migrate), each idempotent so it is safe to re-run on every migrate /
+#   restore. They guarantee:
+#     1. `kavach` is present in the site's `tabInstalled Application` table
+#        even when a production DB backup is restored on top of a dev site
+#        that already has this app's DocTypes / Module Def / files on disk.
+#     2. the 3 SRT roles + the SRT Workflow exist.
+#     3. kavach's shipped reports stay STANDARD (is_standard="Yes") so they
+#        run from disk — see `_ensure_standard_reports` for the NoneType crash
+#        this prevents.
 #
 #   Without this, the symptom is:
 #     "Module Stock Reconciliation Tracking not found
@@ -50,12 +55,14 @@ def after_install():
     _ensure_site_install_record()
     _ensure_roles()
     _ensure_workflow()
+    _ensure_standard_reports()
 
 
 def after_migrate():
     _ensure_site_install_record()
     _ensure_roles()
     _ensure_workflow()
+    _ensure_standard_reports()
 
 
 def _ensure_site_install_record() -> None:
@@ -194,6 +201,57 @@ def _ensure_workflow() -> None:
     wf.flags.ignore_permissions = True
     wf.insert()
     frappe.db.commit()
+
+
+# =============================================================================
+# Standard reports self-heal (2026-06-20)
+# =============================================================================
+#
+# Reports shipped by kavach live on disk as STANDARD reports
+# (`is_standard = "Yes"`, with their `execute()` in the module `.py`). Frappe
+# runs a standard report by IMPORTING that module (the `execute_module` path).
+#
+# THE BUG this heals:
+#   If the `tabReport` row is left as `is_standard = "No"` with an empty
+#   `report_script` (e.g. the record was created/opened in desk without a
+#   disk sync, or a prod backup carried a stale row), Frappe takes the
+#   `execute_script` path instead and calls `safe_exec(self.report_script,…)`.
+#   `report_script` is NULL → RestrictedPython raises:
+#       TypeError: Not allowed source type: "NoneType".
+#   The on-disk `execute()` is never reached.
+#
+# THE FIX (idempotent): force `is_standard = "Yes"` (and clear any stale inline
+#   `report_script`) via a direct db write — no doc save, so we never rewrite
+#   the disk `.json`/`.py`. After this, the `execute_module` path loads the
+#   module's `execute()` correctly.
+#
+# RESTRICT: keep this idempotent + a direct `db.set_value` (NOT `get_doc().save`)
+#   — saving a standard Report in developer_mode rewrites the disk files, which
+#   we must not do from a migrate hook.
+# =============================================================================
+
+_STANDARD_REPORTS = ("Work Order Consumption Cost Analysis",)
+
+
+def _ensure_standard_reports() -> None:
+    """Guarantee kavach's shipped reports run from disk (is_standard='Yes')."""
+    changed = False
+    for report in _STANDARD_REPORTS:
+        if not frappe.db.exists("Report", report):
+            continue
+        vals = frappe.db.get_value(
+            "Report", report, ["is_standard", "report_script"], as_dict=True
+        ) or {}
+        updates = {}
+        if vals.get("is_standard") != "Yes":
+            updates["is_standard"] = "Yes"
+        if vals.get("report_script"):
+            updates["report_script"] = None
+        if updates:
+            frappe.db.set_value("Report", report, updates, update_modified=False)
+            changed = True
+    if changed:
+        frappe.db.commit()
 
 
 def _ensure_workflow_state(name: str, style: str, label: str) -> None:

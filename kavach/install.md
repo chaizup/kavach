@@ -7,7 +7,7 @@
 
 ## 1. Purpose
 
-Self-healing defensive hook that guarantees `kavach` is registered in the site's `tabInstalled Application` table even when a production DB backup is restored on top of a dev site. Also ensures the three SRT roles and the SRT Workflow exist.
+Self-healing defensive hook that guarantees `kavach` is registered in the site's `tabInstalled Application` table even when a production DB backup is restored on top of a dev site. Also ensures the three SRT roles and the SRT Workflow exist, **and that kavach's shipped reports stay built-in / standard** (`is_standard = "Yes"`) so they run from the on-disk source code.
 
 Without this hook, a backup restore would cause:
 > "Module Stock Reconciliation Tracking not found — The resource you are looking for is not available"
@@ -26,6 +26,7 @@ Root cause: `frappe.setup_module_map(include_all_apps=False)` (used in REQUEST c
 | `_ensure_workflow_state(name, style, label)` | Idempotent: creates a global Workflow State if missing |
 | `_ensure_workflow_state_row(wf_name, state, ...)` | Idempotent: appends a state to a Workflow's .states child table |
 | `_ensure_workflow_transition(wf_name, state, action, ...)` | Idempotent: appends a transition to a Workflow's .transitions child table |
+| `_ensure_standard_reports()` | Idempotent: forces kavach's shipped reports to `is_standard="Yes"` (clears stale inline `report_script`) so they run from disk. See § 8. |
 
 ## 3. Workflow States
 
@@ -66,3 +67,25 @@ All functions are idempotent and safe to re-run on every `bench migrate`. The `_
 - **frappe.installer:** `add_to_installed_apps()`
 - **Workflow State / Workflow Action Master / Workflow:** Frappe core DocTypes
 - **Roles:** Srt User, Srt Admin, Srt Super Admin
+- **Report:** the standard reports listed in `_STANDARD_REPORTS`
+
+## 8. Standard-report self-heal (`_ensure_standard_reports`) — 2026-06-20
+
+Built-in reports (e.g. **Work Order Consumption Cost Analysis**) ship as source
+in `stock_reconciliation_tracking/report/<name>/` and must run via Frappe's
+`execute_module` path (`is_standard = "Yes"`). If the `tabReport` row is left as
+`is_standard = "No"` with an empty `report_script` (a stale/restored row, or a
+record created in desk without a disk sync), Frappe instead takes the
+`execute_script` path and calls `safe_exec(report_script, …)` on a `NULL`
+script, raising:
+
+> `TypeError: Not allowed source type: "NoneType".`
+
+`_ensure_standard_reports()` heals this on every migrate with a direct
+`db.set_value('Report', …, {'is_standard':'Yes','report_script':None})` —
+**not** a `get_doc().save()` (saving a standard Report in developer_mode would
+rewrite the disk `.json`/`.py`, which a migrate hook must never do).
+
+Reproduced + verified 2026-06-20 on `dev.localhost`: forcing `is_standard="No"`
+re-creates the `NoneType` crash; running the heal restores `is_standard="Yes"`
+and the report runs (33 cols, clean).
