@@ -15,13 +15,71 @@
 // §1. UTIL — google.script.run Promise wrapper + helpers
 // ═════════════════════════════════════════════════════════════════
 
+// localStorage key for the per-browser session UUID. The server keeps
+// the matching Frappe sid; the client only ever holds this opaque key.
+const SESSION_STORAGE_KEY = 'srt_session_key';
+
+// Server functions that do NOT take sessionKey as their first arg.
+// Everything else is auto-injected with it.
+const PUBLIC_FNS = new Set(['login', 'loginWithUrl', 'isUrlLocked']);
+
+function getSessionKey() {
+  try { return localStorage.getItem(SESSION_STORAGE_KEY) || ''; } catch (_) { return ''; }
+}
+function setSessionKey(k) {
+  try { if (k) localStorage.setItem(SESSION_STORAGE_KEY, k);
+        else   localStorage.removeItem(SESSION_STORAGE_KEY); } catch (_) {}
+}
+
 function callServer(fn, ...args) {
+  // Inject sessionKey as the first arg for non-public functions so every
+  // caller doesn't have to remember to pass it.
+  if (!PUBLIC_FNS.has(fn)) {
+    const key = getSessionKey();
+    if (!key) {
+      return Promise.reject(new Error('SESSION_EXPIRED')).catch(err => {
+        handleSessionExpired();
+        throw err;
+      });
+    }
+    args = [key, ...args];
+  }
   return new Promise((resolve, reject) => {
     google.script.run
       .withSuccessHandler(resolve)
       .withFailureHandler(e => reject(new Error(e.message || String(e))))
       [fn](...args);
+  }).catch(err => {
+    // Any call may surface SESSION_EXPIRED — handle it once, globally,
+    // instead of leaving every caller to catch it (most don't).
+    if (err && err.message && err.message.indexOf('SESSION_EXPIRED') !== -1) {
+      handleSessionExpired();
+    }
+    throw err;
   });
+}
+
+let _sessionRedirecting = false;
+function handleSessionExpired() {
+  if (_sessionRedirecting) return;
+  _sessionRedirecting = true;
+  const lastEmail = (App && App.user && App.user.email) || '';
+  if (App) App.user = null;
+  setSessionKey('');
+  // Defer to next tick so any in-flight UI write completes first.
+  setTimeout(() => {
+    try {
+      showPage('page-login');
+      const emailInp = $('#login-email');
+      if (emailInp && lastEmail) emailInp.value = lastEmail;
+      const pwdInp = $('#login-password');
+      if (pwdInp) { pwdInp.value = ''; pwdInp.focus(); }
+      showToast('Your session expired. Please sign in again.', 'warning', 5000);
+    } finally {
+      // Allow future expiries to re-trigger the flow.
+      setTimeout(() => { _sessionRedirecting = false; }, 1000);
+    }
+  }, 0);
 }
 
 function $(sel) { return document.querySelector(sel); }
@@ -39,6 +97,33 @@ function fmtDate(d) {
   if (!d) return '-';
   const dt = new Date(d);
   return dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+const _MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// "12-Jan-2026 11:30 am" — used on History cards.
+function fmtDateTime(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return '';
+  const day = String(dt.getDate()).padStart(2, '0');
+  const mon = _MONTHS_SHORT[dt.getMonth()];
+  const year = dt.getFullYear();
+  let h = dt.getHours();
+  const m = String(dt.getMinutes()).padStart(2, '0');
+  const ampm = h >= 12 ? 'pm' : 'am';
+  h = h % 12 || 12;
+  return `${day}-${mon}-${year} ${h}:${m} ${ampm}`;
+}
+
+function isToday(d) {
+  if (!d) return false;
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return false;
+  const t = new Date();
+  return dt.getFullYear() === t.getFullYear()
+      && dt.getMonth() === t.getMonth()
+      && dt.getDate() === t.getDate();
 }
 
 function escHtml(s) {
@@ -59,6 +144,10 @@ function debounce(fn, ms) {
 const App = {
   user: null,       // { email, fullName, roles }
   currentPage: '',  // 'dashboard' | 'create' | 'history'
+  // Pre-loaded master data (fetched once on app init, searched locally)
+  allItems: [],       // [{ name, item_name }]
+  allWarehouses: [],  // [{ name }]
+  allBatches: [],     // [{ name, item, expiry_date }] — for current item
   dashboard: {
     tab: 'Admin Approval Pending',
     rows: [],
@@ -78,7 +167,7 @@ const App = {
     company: '',
     name: null, modified: null,
   },
-  history: { rows: [], loading: false },
+  history: { rows: [], loading: false, lastSubmittedName: null },
 };
 
 function hasRole(role) {
@@ -164,17 +253,9 @@ function initLogin() {
   const btn = $('#login-btn');
   const errEl = $('#login-error');
 
-  // Check if URL is pre-configured
-  callServer('isUrlLocked').then(locked => {
-    if (locked) {
-      $('#url-field-wrap').style.display = 'none';
-      $('#login-url').removeAttribute('required');
-    }
-  }).catch(() => {});
-
-  // Restore last-used URL
-  const lastUrl = localStorage.getItem('srt_frappe_url');
-  if (lastUrl) $('#login-url').value = lastUrl;
+  // Hide URL field — URL comes from FRAPPE_URL in Code.gs
+  $('#url-field-wrap').style.display = 'none';
+  $('#login-url').removeAttribute('required');
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -182,21 +263,20 @@ function initLogin() {
     btn.classList.add('loading');
     btn.disabled = true;
 
-    const url = $('#login-url').value.trim();
     const email = $('#login-email').value.trim();
     const pwd = $('#login-password').value;
 
     try {
-      const result = await callServer('loginWithUrl', url, email, pwd);
+      const result = await callServer('login', email, pwd);
       if (!result.success) {
         errEl.textContent = result.error || 'Login failed';
         errEl.style.display = 'block';
         return;
       }
 
-      // Save URL for next time
-      if (url) localStorage.setItem('srt_frappe_url', url);
-
+      // Persist the per-browser session key — every subsequent callServer
+      // call auto-injects it as the first argument to the GAS function.
+      setSessionKey(result.sessionKey || '');
       App.user = { email: result.email, fullName: result.fullName, roles: result.roles };
       showApp();
     } catch (err) {
@@ -229,26 +309,56 @@ function showApp() {
   // Wire up logout
   $('#btn-logout').addEventListener('click', async () => {
     try { await callServer('logout'); } catch(_) {}
+    setSessionKey('');
     App.user = null;
     showPage('page-login');
   });
 
+  // Pre-load items + warehouses in background (cached server-side for 1hr)
+  prefetchMasterData();
+
   navigateTo('dashboard');
+}
+
+async function prefetchMasterData() {
+  try {
+    const [items, whs] = await Promise.all([
+      callServer('getAllItems'),
+      callServer('getAllWarehouses'),
+    ]);
+    App.allItems = items || [];
+    App.allWarehouses = whs || [];
+  } catch(_) {
+    // Fallback: will use server search if pre-load fails
+  }
 }
 
 // Boot
 document.addEventListener('DOMContentLoaded', async () => {
   initLogin();
 
+  // No stored session key → straight to login, don't roundtrip to GAS.
+  if (!getSessionKey()) {
+    showPage('page-login');
+    return;
+  }
+
   try {
+    // Suppress the global SESSION_EXPIRED toast on first load — we just
+    // want to know whether to resume or show login, silently.
+    _sessionRedirecting = true;
     const session = await callServer('checkSession');
+    _sessionRedirecting = false;
     if (session.loggedIn) {
       App.user = { email: session.email, fullName: session.fullName, roles: session.roles };
       showApp();
     } else {
+      setSessionKey('');
       showPage('page-login');
     }
   } catch (e) {
+    _sessionRedirecting = false;
+    setSessionKey('');
     showPage('page-login');
   }
 });
@@ -262,11 +372,10 @@ async function renderDashboard() {
   const area = $('#content-area');
   App.dashboard.selected.clear();
 
-  // Determine which tabs to show based on role
-  const tabs = [];
-  if (isAdmin())      tabs.push('Admin Approval Pending');
-  if (isSuperAdmin()) tabs.push('Super Admin Approval Pending');
-  if (tabs.length === 0) tabs.push('Admin Approval Pending'); // fallback
+  // Always show both tabs — server-side get_dashboard_rows handles
+  // permission filtering. Hiding tabs client-side is unreliable because
+  // role detection can fail if get_form_meta errors during login.
+  const tabs = ['Admin Approval Pending', 'Super Admin Approval Pending'];
 
   if (!tabs.includes(App.dashboard.tab)) App.dashboard.tab = tabs[0];
 
@@ -385,13 +494,15 @@ function renderDashboardList() {
                   (Number(r.total_current_stock_in_default_uom) || 0);
     const deltaClass = Math.abs(delta) < 0.001 ? 'delta-matched' : (delta > 0 ? 'delta-over' : 'delta-short');
 
+    const deltaSign = delta >= 0 ? '+' : '';
+
     return `<div class="card" data-name="${escHtml(r.name)}">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2" style="gap:10px; flex:1; min-width:0;">
           ${canApprove ? `<input type="checkbox" class="dash-cb" data-name="${escHtml(r.name)}" ${sel}
             style="width:20px;height:20px;accent-color:#4f46e5;flex-shrink:0;">` : ''}
           <div style="min-width:0; flex:1;">
-            <div class="card-title truncate">${escHtml(r.item_name || r.item)}</div>
+            <div class="card-title truncate">${escHtml(r.item)} : ${escHtml(r.item_name || '')}</div>
             <div class="card-subtitle truncate">${escHtml(r.name)} &middot; ${escHtml(r.default_warehouse)}</div>
           </div>
         </div>
@@ -399,13 +510,20 @@ function renderDashboardList() {
       </div>
       <div class="card-row">
         <div>
-          <span class="card-label">Current</span>
+          <span class="card-label">Snapshot Stock</span>
           <span class="card-value" style="margin-left:6px;">${fmtNum(r.total_current_stock_in_default_uom)}</span>
           <span class="total-uom">${escHtml(r.default_uom || '')}</span>
         </div>
         <div>
-          <span class="card-label">Found</span>
-          <span class="card-value ${deltaClass}" style="margin-left:6px;">${fmtNum(r.total_qty_found_in_default_uom)}</span>
+          <span class="card-label">Physical Found</span>
+          <span class="card-value" style="margin-left:6px;">${fmtNum(r.total_qty_found_in_default_uom)}</span>
+          <span class="total-uom">${escHtml(r.default_uom || '')}</span>
+        </div>
+      </div>
+      <div class="card-row" style="margin-top:4px;">
+        <div>
+          <span class="card-label">Difference</span>
+          <span class="card-value ${deltaClass}" style="margin-left:6px;font-size:15px;">${deltaSign}${fmtNum(delta)} ${escHtml(r.default_uom || '')}</span>
         </div>
       </div>
       <div class="card-row" style="margin-top:4px;">
@@ -456,6 +574,7 @@ function updateBulkBar() {
     <span class="bulk-count">${count} selected</span>
     <div class="bulk-actions">
       <button class="btn btn-success btn-sm" onclick="bulkApprove()">Approve All</button>
+      <button class="btn btn-danger btn-sm" onclick="bulkReject()">Reject All</button>
       <button class="btn btn-sm" style="background:rgba(255,255,255,0.2);color:#fff;" onclick="App.dashboard.selected.clear(); updateDashboardSelection();">Cancel</button>
     </div>
   `;
@@ -491,6 +610,40 @@ async function bulkApprove() {
   }
 }
 
+async function bulkReject() {
+  const names = Array.from(App.dashboard.selected);
+  if (names.length === 0) return;
+
+  const reason = prompt('Reason for rejecting all (required):');
+  if (!reason || !reason.trim()) {
+    showToast('Rejection reason is required', 'warning');
+    return;
+  }
+
+  showToast('Rejecting ' + names.length + ' SRTs...', '');
+  try {
+    const results = await callServer('bulkRejectSrt', names, reason.trim());
+    const ok = results.filter(r => r.ok).length;
+    const fail = results.filter(r => !r.ok).length;
+    if (fail > 0) {
+      showToast(`${ok} rejected, ${fail} failed`, 'warning', 4000);
+    } else {
+      showToast(`${ok} rejected successfully`, 'success');
+    }
+    App.dashboard.selected.clear();
+    // Refresh
+    App.dashboard.counts = await callServer('getDashboardCounts');
+    $$('.tab-btn').forEach(btn => {
+      const t = btn.dataset.tab;
+      const badge = btn.querySelector('.tab-badge');
+      if (badge) badge.textContent = App.dashboard.counts[t] || 0;
+    });
+    loadDashboardRows();
+  } catch (e) {
+    showToast(e.message || 'Bulk reject failed', 'error');
+  }
+}
+
 function statusPill(state) {
   const map = {
     'Draft':                  ['pill-draft',     'Draft'],
@@ -513,7 +666,7 @@ async function viewSrt(name) {
 
   try {
     const [doc, batches] = await Promise.all([
-      callServer('loadSrtForm', name),
+      callServer('getSrtDoc', name),
       callServer('getBatchSummary', name),
     ]);
 
@@ -527,9 +680,15 @@ async function viewSrt(name) {
     const batchesHtml = (batches || []).map(b => {
       const qf = Number(b.qty_found) || 0;
       const cur = Number(b.current_stock_in_selected_uom) || 0;
+      const curStock = Number(b.current_stock_in_stock_uom) || 0;
+      const cf = Number(b.conversion_factor) || 1;
+      const qfInStock = qf * cf;
       const delta = qf - cur;
       const cls = !b.is_counted ? '' :
                   (Math.abs(delta) < 0.001 ? 'matched' : (delta > 0 ? 'over' : 'short'));
+      const selUom = b.select_uom || b.stock_uom;
+      const stockUom = b.stock_uom || '';
+      const showBothUom = selUom !== stockUom;
       return `<div class="batch-card ${cls}" style="${!b.is_counted ? 'opacity:0.5;' : ''}">
         <div class="batch-header">
           <span class="batch-name">${escHtml(b.batch_no)}</span>
@@ -539,22 +698,37 @@ async function viewSrt(name) {
         </div>
         <div class="batch-fields">
           <div class="batch-field">
-            <label>Current (${escHtml(b.select_uom || b.stock_uom)})</label>
+            <label>Current (${escHtml(selUom)})</label>
             <div class="value">${fmtNum(cur)}</div>
           </div>
           <div class="batch-field">
-            <label>Found</label>
+            <label>Found (${escHtml(selUom)})</label>
             <div class="value" style="font-weight:700;">${b.is_counted ? fmtNum(qf) : '-'}</div>
           </div>
+          ${showBothUom ? `
+          <div class="batch-field">
+            <label>Current (${escHtml(stockUom)})</label>
+            <div class="value">${fmtNum(curStock)}</div>
+          </div>
+          <div class="batch-field">
+            <label>Found (${escHtml(stockUom)})</label>
+            <div class="value" style="font-weight:700;">${b.is_counted ? fmtNum(qfInStock) : '-'}</div>
+          </div>` : ''}
         </div>
       </div>`;
     }).join('');
 
-    const remarksHtml = [
-      { title: 'User Remark', val: doc.user_remark },
-      { title: 'Admin Remark', val: doc.admin_remark },
-      { title: 'Super Admin Remark', val: doc.super_admin_remark },
-    ].filter(r => r.val).map(r => `
+    // Admin sees: user remark only
+    // Super Admin sees: user + admin remarks
+    // Regular user sees: nothing (no remark cards)
+    const visibleRemarks = [];
+    if (canApproveAdmin || canApproveSuperAdmin) {
+      if (doc.user_remark) visibleRemarks.push({ title: 'User Remark', val: doc.user_remark });
+    }
+    if (canApproveSuperAdmin) {
+      if (doc.admin_remark) visibleRemarks.push({ title: 'Admin Remark', val: doc.admin_remark });
+    }
+    const remarksHtml = visibleRemarks.map(r => `
       <div class="remark-card">
         <div class="remark-card-title">${r.title}</div>
         <div class="remark-card-body">${escHtml(r.val)}</div>
@@ -565,7 +739,7 @@ async function viewSrt(name) {
       <div class="modal-handle"></div>
       <div class="modal-header">
         <div>
-          <div class="modal-title">${escHtml(doc.item_name || doc.item)}</div>
+          <div class="modal-title">${escHtml(doc.item)} : ${escHtml(doc.item_name || '')}</div>
           <div style="font-size:12px;color:#64748b;">${escHtml(doc.name)} &middot; ${fmtDate(doc.posting_date)}</div>
         </div>
         ${statusPill(doc.workflow_state)}
@@ -574,22 +748,44 @@ async function viewSrt(name) {
         <div class="totals-panel">
           <div class="totals-grid">
             <div class="total-item">
-              <div class="total-label">Current Stock</div>
-              <div class="total-value">${fmtNum(doc.total_current_stock_in_default_uom)} <span class="total-uom">${escHtml(doc.default_uom)}</span></div>
+              <div class="total-label">Snapshot (${escHtml(doc.default_uom)})</div>
+              <div class="total-value">${fmtNum(doc.total_current_stock_in_default_uom)}</div>
             </div>
             <div class="total-item">
-              <div class="total-label">Actually Found</div>
-              <div class="total-value">${fmtNum(doc.total_qty_found_in_default_uom)} <span class="total-uom">${escHtml(doc.default_uom)}</span></div>
+              <div class="total-label">Found (${escHtml(doc.default_uom)})</div>
+              <div class="total-value">${fmtNum(doc.total_qty_found_in_default_uom)}</div>
             </div>
+            ${doc.higher_uom && doc.higher_uom !== doc.default_uom ? `
+            <div class="total-item">
+              <div class="total-label">Snapshot (${escHtml(doc.higher_uom)})</div>
+              <div class="total-value">${fmtNum(doc.total_current_stock_in_higher_uom)}</div>
+            </div>
+            <div class="total-item">
+              <div class="total-label">Found (${escHtml(doc.higher_uom)})</div>
+              <div class="total-value">${fmtNum(doc.total_qty_found_in_higher_uom)}</div>
+            </div>` : ''}
           </div>
+          ${(() => {
+            const d = (Number(doc.total_qty_found_in_default_uom) || 0) - (Number(doc.total_current_stock_in_default_uom) || 0);
+            const cls = Math.abs(d) < 0.001 ? 'delta-matched' : (d > 0 ? 'delta-over' : 'delta-short');
+            const sign = d >= 0 ? '+' : '';
+            const diffHtml = '<div class="card-row mt-2"><span class="card-label">Difference</span><span class="total-value ' + cls + '" style="font-size:16px;font-weight:700;">' + sign + fmtNum(d) + ' ' + escHtml(doc.default_uom) + '</span></div>';
+            if (doc.higher_uom && doc.higher_uom !== doc.default_uom) {
+              const hcf = Number(doc.higher_uom_cf) || 1;
+              const dh = d / hcf;
+              const signH = dh >= 0 ? '+' : '';
+              return diffHtml + '<div class="card-row" style="margin-top:2px;"><span class="card-label"></span><span class="total-value ' + cls + '" style="font-size:13px;">' + signH + fmtNum(dh) + ' ' + escHtml(doc.higher_uom) + '</span></div>';
+            }
+            return diffHtml;
+          })()}
         </div>
 
         ${remarksHtml}
 
-        ${canApprove ? `
+        ${canApprove || canReject ? `
           <div class="form-group mt-3">
-            <label for="modal-remark">${remarkLabel}</label>
-            <textarea id="modal-remark" rows="2" placeholder="Add your remark (optional)"></textarea>
+            <label for="modal-remark">${remarkLabel} <span style="color:#e11d48;">*</span></label>
+            <textarea id="modal-remark" rows="2" placeholder="Enter your remark (required)" required></textarea>
           </div>
         ` : ''}
 
@@ -612,6 +808,11 @@ async function viewSrt(name) {
 async function approveFromModal(name) {
   const remarkEl = $('#modal-remark');
   const remark = remarkEl ? remarkEl.value.trim() : '';
+  if (!remark) {
+    showToast('Remark is required', 'warning');
+    if (remarkEl) remarkEl.focus();
+    return;
+  }
 
   showToast('Approving...', '');
   try {
@@ -633,14 +834,16 @@ async function approveFromModal(name) {
 }
 
 async function rejectFromModal(name) {
-  const reason = prompt('Reason for rejection (required):');
-  if (!reason || !reason.trim()) {
-    showToast('Rejection reason is required', 'warning');
+  const remarkEl = $('#modal-remark');
+  const reason = remarkEl ? remarkEl.value.trim() : '';
+  if (!reason) {
+    showToast('Remark is required for rejection', 'warning');
+    if (remarkEl) remarkEl.focus();
     return;
   }
   showToast('Rejecting...', '');
   try {
-    await callServer('rejectSrt', name, reason.trim());
+    await callServer('rejectSrt', name, reason);
     closeModal();
     showToast('Rejected', 'success');
     loadDashboardRows();
@@ -693,6 +896,7 @@ async function renderCreateForm() {
       <label>Item</label>
       <div class="search-wrap">
         <input type="text" id="item-search" placeholder="Search item code or name..." autocomplete="off">
+        <button type="button" class="search-clear" id="item-clear">&times;</button>
         <div id="item-results" class="search-results"></div>
       </div>
     </div>
@@ -701,6 +905,7 @@ async function renderCreateForm() {
       <label>Warehouse</label>
       <div class="search-wrap">
         <input type="text" id="wh-search" placeholder="Search warehouse..." autocomplete="off">
+        <button type="button" class="search-clear" id="wh-clear">&times;</button>
         <div id="wh-results" class="search-results"></div>
       </div>
     </div>
@@ -719,9 +924,18 @@ async function renderCreateForm() {
     <div id="form-totals" class="mt-3" style="display:none;"></div>
     <div id="form-batches" class="mt-3"></div>
 
+    <div id="add-batch-wrap" class="mt-3" style="display:none;">
+      <div class="section-header">Add Batch (0 stock / not listed)</div>
+      <div class="search-wrap">
+        <input type="text" id="batch-search" placeholder="Search batch number..." autocomplete="off">
+        <button type="button" class="search-clear" id="batch-clear">&times;</button>
+        <div id="batch-results" class="search-results"></div>
+      </div>
+    </div>
+
     <div class="form-group mt-3" id="form-remark-wrap" style="display:none;">
-      <label>User Remark</label>
-      <textarea id="form-user-remark" rows="2" placeholder="Optional notes..."></textarea>
+      <label>User Remark <span style="color:#e11d48;">*</span></label>
+      <textarea id="form-user-remark" rows="2" placeholder="Enter your remark (required)"></textarea>
     </div>
 
     <div id="form-actions" class="mt-3" style="display:none;">
@@ -739,51 +953,104 @@ async function renderCreateForm() {
   bindFormSearch();
 }
 
+function _localFilter(list, txt, keys) {
+  const q = (txt || '').toLowerCase();
+  if (!q) return list.slice(0, 30);
+  return list.filter(r => keys.some(k => (r[k] || '').toLowerCase().includes(q))).slice(0, 30);
+}
+
+function _toggleClear(inputEl, clearBtnId) {
+  const btn = $('#' + clearBtnId);
+  if (btn) btn.classList.toggle('visible', !!inputEl.value.trim());
+}
+
 function bindFormSearch() {
-  // Item search
+  // ── Item search (local from App.allItems, fallback to server) ──
   const itemInput = $('#item-search');
   const itemResults = $('#item-results');
-  const searchItemsFn = debounce(async (txt) => {
-    if (txt.length < 2) { itemResults.classList.remove('show'); return; }
-    try {
-      const items = await callServer('searchItems', txt);
+  const itemClear = $('#item-clear');
+
+  function renderItemResults(txt) {
+    _toggleClear(itemInput, 'item-clear');
+    if (txt.length < 1) { itemResults.classList.remove('show'); return; }
+    if (App.allItems.length > 0) {
+      const items = _localFilter(App.allItems, txt, ['name', 'item_name']);
       if (items.length === 0) {
         itemResults.innerHTML = '<div class="search-result-item" style="color:#94a3b8;">No items found</div>';
       } else {
         itemResults.innerHTML = items.map(it =>
-          `<div class="search-result-item" data-code="${escHtml(it.name)}">
-            <strong>${escHtml(it.name)}</strong>
-            <small>${escHtml(it.item_name || '')}</small>
+          `<div class="search-result-item" data-code="${escHtml(it.name)}" data-item-name="${escHtml(it.item_name || '')}">
+            <strong>${escHtml(it.name)}</strong> : ${escHtml(it.item_name || '')}
           </div>`
         ).join('');
       }
       itemResults.classList.add('show');
-    } catch(e) {
-      itemResults.innerHTML = `<div class="search-result-item" style="color:#e11d48;">${escHtml(e.message)}</div>`;
-      itemResults.classList.add('show');
+    } else {
+      _serverSearchItems(txt, itemResults);
     }
-  }, 300);
+  }
 
-  itemInput.addEventListener('input', () => searchItemsFn(itemInput.value.trim()));
-  itemInput.addEventListener('focus', () => {
-    if (itemInput.value.trim().length >= 2) searchItemsFn(itemInput.value.trim());
-  });
+  async function _serverSearchItems(txt, el) {
+    try {
+      const items = await callServer('searchItems', txt);
+      if (items.length === 0) {
+        el.innerHTML = '<div class="search-result-item" style="color:#94a3b8;">No items found</div>';
+      } else {
+        el.innerHTML = items.map(it =>
+          `<div class="search-result-item" data-code="${escHtml(it.name)}" data-item-name="${escHtml(it.item_name || '')}">
+            <strong>${escHtml(it.name)}</strong> : ${escHtml(it.item_name || '')}
+          </div>`
+        ).join('');
+      }
+      el.classList.add('show');
+    } catch(e) {
+      el.innerHTML = `<div class="search-result-item" style="color:#e11d48;">${escHtml(e.message)}</div>`;
+      el.classList.add('show');
+    }
+  }
+
+  itemInput.addEventListener('input', () => renderItemResults(itemInput.value.trim()));
+  itemInput.addEventListener('focus', () => renderItemResults(itemInput.value.trim()));
   itemResults.addEventListener('click', e => {
     const item = e.target.closest('.search-result-item');
     if (!item || !item.dataset.code) return;
     App.form.item = item.dataset.code;
-    itemInput.value = item.dataset.code;
+    App.form.item_name = item.dataset.itemName || '';
+    itemInput.value = item.dataset.code + ' : ' + (item.dataset.itemName || '');
     itemResults.classList.remove('show');
+    _toggleClear(itemInput, 'item-clear');
+    // Pre-load all batches for this item in background
+    prefetchBatchesForItem(App.form.item);
     tryLoadBatches();
   });
 
-  // Warehouse search
+  // Item clear button
+  itemClear.addEventListener('click', () => {
+    App.form.item = '';
+    App.form.item_name = '';
+    App.form.batches = [];
+    App.allBatches = [];
+    itemInput.value = '';
+    itemResults.classList.remove('show');
+    itemClear.classList.remove('visible');
+    $('#form-batches').innerHTML = '';
+    $('#form-totals').style.display = 'none';
+    $('#form-actions').style.display = 'none';
+    $('#form-remark-wrap').style.display = 'none';
+    $('#add-batch-wrap').style.display = 'none';
+    itemInput.focus();
+  });
+
+  // ── Warehouse search (local from App.allWarehouses, fallback to server) ──
   const whInput = $('#wh-search');
   const whResults = $('#wh-results');
-  const searchWhFn = debounce(async (txt) => {
-    if (txt.length < 2) { whResults.classList.remove('show'); return; }
-    try {
-      const whs = await callServer('searchWarehouses', txt);
+  const whClear = $('#wh-clear');
+
+  function renderWhResults(txt) {
+    _toggleClear(whInput, 'wh-clear');
+    if (txt.length < 1) { whResults.classList.remove('show'); return; }
+    if (App.allWarehouses.length > 0) {
+      const whs = _localFilter(App.allWarehouses, txt, ['name']);
       if (whs.length === 0) {
         whResults.innerHTML = '<div class="search-result-item" style="color:#94a3b8;">No warehouses found</div>';
       } else {
@@ -792,39 +1059,191 @@ function bindFormSearch() {
         ).join('');
       }
       whResults.classList.add('show');
-    } catch(e) {
-      whResults.innerHTML = `<div class="search-result-item" style="color:#e11d48;">${escHtml(e.message)}</div>`;
-      whResults.classList.add('show');
+    } else {
+      _serverSearchWh(txt, whResults);
     }
-  }, 300);
+  }
 
-  whInput.addEventListener('input', () => searchWhFn(whInput.value.trim()));
-  whInput.addEventListener('focus', () => {
-    if (whInput.value.trim().length >= 2) searchWhFn(whInput.value.trim());
-  });
+  async function _serverSearchWh(txt, el) {
+    try {
+      const whs = await callServer('searchWarehouses', txt);
+      if (whs.length === 0) {
+        el.innerHTML = '<div class="search-result-item" style="color:#94a3b8;">No warehouses found</div>';
+      } else {
+        el.innerHTML = whs.map(w =>
+          `<div class="search-result-item" data-name="${escHtml(w.name)}">${escHtml(w.name)}</div>`
+        ).join('');
+      }
+      el.classList.add('show');
+    } catch(e) {
+      el.innerHTML = `<div class="search-result-item" style="color:#e11d48;">${escHtml(e.message)}</div>`;
+      el.classList.add('show');
+    }
+  }
+
+  whInput.addEventListener('input', () => renderWhResults(whInput.value.trim()));
+  whInput.addEventListener('focus', () => renderWhResults(whInput.value.trim()));
   whResults.addEventListener('click', e => {
     const wh = e.target.closest('.search-result-item');
     if (!wh || !wh.dataset.name) return;
     App.form.default_warehouse = wh.dataset.name;
     whInput.value = wh.dataset.name;
     whResults.classList.remove('show');
+    _toggleClear(whInput, 'wh-clear');
     tryLoadBatches();
   });
 
-  // Close dropdowns on outside tap
+  // Warehouse clear button
+  whClear.addEventListener('click', () => {
+    App.form.default_warehouse = '';
+    App.form.batches = [];
+    whInput.value = '';
+    whResults.classList.remove('show');
+    whClear.classList.remove('visible');
+    $('#form-batches').innerHTML = '';
+    $('#form-totals').style.display = 'none';
+    $('#form-actions').style.display = 'none';
+    $('#form-remark-wrap').style.display = 'none';
+    $('#add-batch-wrap').style.display = 'none';
+    whInput.focus();
+  });
+
+  // ── Close dropdowns on outside tap ──
   document.addEventListener('click', e => {
-    if (!e.target.closest('#item-search') && !e.target.closest('#item-results')) {
+    if (!e.target.closest('#item-search') && !e.target.closest('#item-results') && !e.target.closest('#item-clear')) {
       itemResults.classList.remove('show');
     }
-    if (!e.target.closest('#wh-search') && !e.target.closest('#wh-results')) {
+    if (!e.target.closest('#wh-search') && !e.target.closest('#wh-results') && !e.target.closest('#wh-clear')) {
       whResults.classList.remove('show');
+    }
+    if (!e.target.closest('#batch-search') && !e.target.closest('#batch-results') && !e.target.closest('#batch-clear')) {
+      const br = $('#batch-results');
+      if (br) br.classList.remove('show');
     }
   });
 }
 
+async function prefetchBatchesForItem(itemCode) {
+  try {
+    App.allBatches = await callServer('getAllBatchesForItem', itemCode);
+  } catch(_) {
+    App.allBatches = [];
+  }
+}
+
+function bindBatchSearch() {
+  const batchInput = $('#batch-search');
+  const batchResults = $('#batch-results');
+  const batchClear = $('#batch-clear');
+  if (!batchInput || !batchResults) return;
+
+  // Clear previous listeners by replacing element
+  const fresh = batchInput.cloneNode(true);
+  batchInput.parentNode.replaceChild(fresh, batchInput);
+  const input = $('#batch-search');
+
+  function renderBatchResults(txt) {
+    _toggleClear(input, 'batch-clear');
+    const existing = new Set(App.form.batches.map(b => b.batch_no));
+    let available;
+
+    if (App.allBatches.length > 0) {
+      // Local search — instant
+      available = App.allBatches
+        .filter(b => !existing.has(b.name))
+        .filter(b => !txt || b.name.toLowerCase().includes(txt.toLowerCase()));
+    } else {
+      // Show all if no txt, or nothing if no data
+      available = [];
+    }
+
+    if (txt.length < 1 && App.allBatches.length === 0) {
+      batchResults.classList.remove('show');
+      return;
+    }
+
+    if (available.length === 0) {
+      batchResults.innerHTML = '<div class="search-result-item" style="color:#94a3b8;">No matching batches found</div>';
+    } else {
+      batchResults.innerHTML = available.slice(0, 30).map(b =>
+        `<div class="search-result-item" data-batch="${escHtml(b.name)}">
+          <strong>${escHtml(b.name)}</strong>${b.expiry_date ? ' <span style="color:#94a3b8;font-size:11px;">exp: ' + fmtDate(b.expiry_date) + '</span>' : ''}
+        </div>`
+      ).join('');
+    }
+    batchResults.classList.add('show');
+  }
+
+  input.addEventListener('input', () => renderBatchResults(input.value.trim()));
+  input.addEventListener('focus', () => renderBatchResults(input.value.trim()));
+
+  // Batch clear button
+  if (batchClear) {
+    batchClear.addEventListener('click', () => {
+      input.value = '';
+      batchResults.classList.remove('show');
+      batchClear.classList.remove('visible');
+      input.focus();
+    });
+  }
+
+  batchResults.addEventListener('click', async (e) => {
+    const item = e.target.closest('.search-result-item');
+    if (!item || !item.dataset.batch) return;
+    const batchNo = item.dataset.batch;
+    batchResults.classList.remove('show');
+    input.value = '';
+
+    // Guard: skip if batch already added (can happen on double-tap)
+    if (App.form.batches.some(b => b.batch_no === batchNo)) {
+      showToast('Batch ' + batchNo + ' already added', 'warning');
+      return;
+    }
+
+    showToast('Adding batch ' + batchNo + '...', '');
+    try {
+      const postDate = $('#form-posting-date').value || null;
+      const postTime = $('#form-posting-time').value || null;
+      const state = await callServer('getBatchCurrentState',
+        App.form.item, batchNo, postDate, postTime);
+
+      const select_uom = App.form.higher_uom || App.form.default_uom;
+      const cf = select_uom !== App.form.default_uom ? (Number(App.form.higher_uom_cf) || 1) : 1;
+      const stockQty = Number(state.qty) || 0;
+
+      // Double-check again after async call (in case user tapped twice)
+      if (App.form.batches.some(b => b.batch_no === batchNo)) return;
+
+      App.form.batches.push({
+        batch_no: batchNo,
+        item_code: App.form.item,
+        warehouse: App.form.default_warehouse,
+        stock_uom: state.stock_uom || App.form.default_uom,
+        current_stock_in_stock_uom: stockQty,
+        valuation_rate: Number(state.valuation_rate) || 0,
+        select_uom: select_uom,
+        conversion_factor: cf,
+        current_stock_in_selected_uom: cf ? stockQty / cf : stockQty,
+        item_name_selected: App.form.item_name,
+        is_counted: 1,
+        qty_found: 0,
+      });
+
+      recomputeFormTotals();
+      renderFormBatches();
+      showToast('Batch ' + batchNo + ' added (stock: ' + fmtNum(stockQty) + ')', 'success');
+    } catch(e) {
+      showToast(e.message || 'Failed to add batch', 'error', 4000);
+    }
+  });
+}
+
+let _loadBatchesId = 0; // guard against concurrent/stale calls
+
 async function tryLoadBatches() {
   if (!App.form.item || !App.form.default_warehouse) return;
 
+  const callId = ++_loadBatchesId; // each call gets a unique id
   const batchArea = $('#form-batches');
   batchArea.innerHTML = '<div class="loading-center"><div class="spinner"></div></div>';
 
@@ -834,6 +1253,9 @@ async function tryLoadBatches() {
     const d = await callServer('getItemDefaults',
       App.form.item, App.form.default_warehouse, postDate, postTime);
 
+    // If a newer call was made while we were waiting, discard this result
+    if (callId !== _loadBatchesId) return;
+
     App.form.item_name = d.item_name;
     App.form.default_uom = d.default_uom;
     App.form.higher_uom = d.higher_uom;
@@ -842,11 +1264,17 @@ async function tryLoadBatches() {
     App.form.total_current_stock_in_higher_uom = d.total_current_stock_in_higher_uom;
     App.form.total_qty_found_in_default_uom = d.total_current_stock_in_default_uom;
     App.form.total_qty_found_in_higher_uom = d.total_current_stock_in_higher_uom;
-    App.form.batches = (d.batches || []).map(b => ({
-      ...b,
-      is_counted: 0,
-      qty_found: 0,
-    }));
+
+    // Deduplicate batches by batch_no (prevents repeats from API)
+    const seen = new Set();
+    const uniqueBatches = [];
+    for (const b of (d.batches || [])) {
+      if (!seen.has(b.batch_no)) {
+        seen.add(b.batch_no);
+        uniqueBatches.push({ ...b, is_counted: 0, qty_found: 0 });
+      }
+    }
+    App.form.batches = uniqueBatches;
 
     renderFormTotals();
     renderFormBatches();
@@ -854,11 +1282,14 @@ async function tryLoadBatches() {
     $('#form-totals').style.display = '';
     $('#form-actions').style.display = '';
     $('#form-remark-wrap').style.display = '';
+    $('#add-batch-wrap').style.display = '';
+    bindBatchSearch();
 
     if (App.form.batches.length === 0) {
-      showToast('No batches with positive stock found', 'warning');
+      showToast('No batches with positive stock found — use Add Batch below', 'warning');
     }
   } catch (e) {
+    if (callId !== _loadBatchesId) return; // stale error, ignore
     batchArea.innerHTML = `<div class="error-msg">${escHtml(e.message)}</div>`;
   }
 }
@@ -907,11 +1338,20 @@ function renderFormBatches() {
     return;
   }
 
+  const selUomLabel = App.form.higher_uom || App.form.default_uom;
+  const stockUomLabel = App.form.default_uom;
+  const showBothUom = selUomLabel !== stockUomLabel;
+
   batchArea.innerHTML = `
     <div class="section-header">Batches (${batches.length})</div>
     ${batches.map((b, i) => {
       const checked = b.is_counted ? 'checked' : '';
       const cardCls = b.is_counted ? 'checked' : '';
+      const bSelUom = b.select_uom || selUomLabel;
+      const bStockUom = b.stock_uom || stockUomLabel;
+      const cf = Number(b.conversion_factor) || 1;
+      const qfHigher = b.is_counted ? b.qty_found : '';
+      const qfStock = (b.is_counted && b.qty_found) ? (Number(b.qty_found) * cf) : '';
       return `<div class="batch-card ${cardCls}" data-idx="${i}">
         <div class="batch-header">
           <span class="batch-name truncate" style="max-width:60%;">${escHtml(b.batch_no)}</span>
@@ -922,26 +1362,31 @@ function renderFormBatches() {
         </div>
         <div class="batch-fields">
           <div class="batch-field">
-            <label>Current (${escHtml(b.select_uom || App.form.higher_uom || App.form.default_uom)})</label>
+            <label>Current (${escHtml(bSelUom)})</label>
             <div class="value">${fmtNum(b.current_stock_in_selected_uom)}</div>
           </div>
           <div class="batch-field">
-            <label>Qty Found</label>
-            <input type="number" class="batch-qty-input" data-idx="${i}"
-              value="${b.is_counted ? b.qty_found : ''}"
+            <label>Found (${escHtml(bSelUom)})</label>
+            <input type="number" class="batch-qty-higher" data-idx="${i}"
+              value="${qfHigher}"
               step="0.001" min="0"
               placeholder="${b.is_counted ? '0' : '-'}"
               ${!b.is_counted ? 'disabled' : ''}>
           </div>
           <div class="batch-field">
-            <label>Stock UOM Qty</label>
-            <div class="value">${fmtNum(b.current_stock_in_stock_uom)} ${escHtml(b.stock_uom || '')}</div>
+            <label>Current (${escHtml(bStockUom)})</label>
+            <div class="value">${fmtNum(b.current_stock_in_stock_uom)}</div>
           </div>
           <div class="batch-field">
-            <label>Conv. Factor</label>
-            <div class="value">${fmtNum(b.conversion_factor, 2)}</div>
+            <label>Found (${escHtml(bStockUom)})</label>
+            <input type="number" class="batch-qty-stock" data-idx="${i}"
+              value="${qfStock}"
+              step="0.001" min="0"
+              placeholder="${b.is_counted ? '0' : '-'}"
+              ${!b.is_counted ? 'disabled' : ''}>
           </div>
         </div>
+        ${showBothUom ? `<div style="text-align:right;font-size:10px;color:#94a3b8;margin-top:2px;">CF: 1 ${escHtml(bSelUom)} = ${fmtNum(cf, 2)} ${escHtml(bStockUom)}</div>` : ''}
       </div>`;
     }).join('')}
   `;
@@ -957,13 +1402,33 @@ function renderFormBatches() {
     });
   });
 
-  batchArea.querySelectorAll('.batch-qty-input').forEach(inp => {
+  // Higher UOM input — updates qty_found (stored in higher UOM), syncs stock UOM field
+  batchArea.querySelectorAll('.batch-qty-higher').forEach(inp => {
     inp.addEventListener('input', () => {
       const idx = parseInt(inp.dataset.idx);
-      App.form.batches[idx].qty_found = parseFloat(inp.value) || 0;
-      if (!App.form.batches[idx].is_counted) {
-        App.form.batches[idx].is_counted = 1;
-      }
+      const b = App.form.batches[idx];
+      b.qty_found = parseFloat(inp.value) || 0;
+      if (!b.is_counted) b.is_counted = 1;
+      // Sync stock UOM field
+      const cf = Number(b.conversion_factor) || 1;
+      const stockInp = batchArea.querySelector(`.batch-qty-stock[data-idx="${idx}"]`);
+      if (stockInp) stockInp.value = b.qty_found ? (b.qty_found * cf).toFixed(3) : '';
+      recomputeFormTotals();
+    });
+  });
+
+  // Stock UOM input — reverse-converts to higher UOM and stores in qty_found
+  batchArea.querySelectorAll('.batch-qty-stock').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const idx = parseInt(inp.dataset.idx);
+      const b = App.form.batches[idx];
+      const stockVal = parseFloat(inp.value) || 0;
+      const cf = Number(b.conversion_factor) || 1;
+      b.qty_found = cf ? stockVal / cf : stockVal;
+      if (!b.is_counted) b.is_counted = 1;
+      // Sync higher UOM field
+      const higherInp = batchArea.querySelector(`.batch-qty-higher[data-idx="${idx}"]`);
+      if (higherInp) higherInp.value = b.qty_found ? b.qty_found.toFixed(3) : '';
       recomputeFormTotals();
     });
   });
@@ -999,7 +1464,58 @@ async function saveForm() {
     const result = await callServer('saveSrtForm', payload, App.form.name || null);
     App.form.name = result.name;
     App.form.modified = result.modified;
-    showToast('Saved: ' + result.name, 'success');
+
+    // ── ERP VERIFICATION ──
+    // Re-fetch from Frappe to confirm the draft actually landed. A
+    // successful save call alone isn't enough — we want to be sure the
+    // doc exists on the server with docstatus 0 before navigating away.
+    const savedName = App.form.name;
+    let verifyOk = false;
+    let verifyError = '';
+    try {
+      const verifyDoc = await callServer('getSrtDoc', savedName);
+      if (verifyDoc && verifyDoc.name === savedName && Number(verifyDoc.docstatus) === 0) {
+        verifyOk = true;
+      } else if (verifyDoc && Number(verifyDoc.docstatus) >= 1) {
+        verifyError = 'Server shows this document is already submitted (not a draft).';
+      } else {
+        verifyError = 'Server returned no matching document.';
+      }
+    } catch (e) {
+      verifyError = 'ERP read-back failed: ' + (e.message || e);
+    }
+
+    if (!verifyOk) {
+      showModal(`
+        <div class="modal-handle"></div>
+        <div class="modal-header">
+          <div class="modal-title" style="color:#e11d48;">ERP Verification Failed</div>
+        </div>
+        <div class="modal-body">
+          <div class="error-msg">
+            <strong>${escHtml(savedName)}</strong> appeared to save, but the Frappe server could not confirm it.
+          </div>
+          <p class="mt-3" style="font-size:13px;color:#475569;">
+            <strong>Reason:</strong> ${escHtml(verifyError)}
+          </p>
+          <p class="mt-2" style="font-size:13px;color:#475569;">
+            Do <strong>not</strong> assume the draft is posted. Open the Frappe desk to check, or retry save.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline btn-full" onclick="closeModal()">Acknowledge</button>
+        </div>
+      `);
+      showToast('ERP verification failed for ' + savedName, 'error', 6000);
+      return;  // stay on the form so the user can retry
+    }
+
+    showToast('Saved on ERP: ' + savedName, 'success', 4000);
+    App.history.lastSubmittedName = savedName;
+    // Clear the form state so navigating back to "New SRT" starts fresh
+    // (and the just-saved doc can't be accidentally re-saved on top).
+    resetForm();
+    navigateTo('history');
   } catch (e) {
     showToast(e.message || 'Save failed', 'error', 5000);
   } finally {
@@ -1009,6 +1525,15 @@ async function saveForm() {
 
 async function submitForm() {
   if (!validateForm()) return;
+
+  // Check user remark is filled
+  const userRemarkEl = $('#form-user-remark');
+  const userRemark = userRemarkEl ? userRemarkEl.value.trim() : '';
+  if (!userRemark) {
+    showToast('User Remark is required', 'warning');
+    if (userRemarkEl) userRemarkEl.focus();
+    return;
+  }
 
   // Check at least one row is ticked
   const ticked = App.form.batches.filter(b => b.is_counted);
@@ -1037,14 +1562,65 @@ async function submitForm() {
     // Now submit
     const result = await callServer('submitSrtForm', App.form.name);
     const state = result.workflow_state || '';
+
+    // ── ERP VERIFICATION ──
+    // Re-fetch from Frappe to confirm the submit actually landed.
+    // Frontend "success" alone is not enough — show a hard warning
+    // if the server can't confirm the doc with docstatus >= 1.
+    const submittedName = App.form.name;
+    let verifyOk = false;
+    let verifyError = '';
+    try {
+      const verifyDoc = await callServer('getSrtDoc', submittedName);
+      if (verifyDoc && verifyDoc.name === submittedName && Number(verifyDoc.docstatus) >= 1) {
+        verifyOk = true;
+      } else if (verifyDoc && Number(verifyDoc.docstatus) === 0) {
+        verifyError = 'Save reached ERP but Submit did not — document is still a Draft on the server.';
+      } else {
+        verifyError = 'Server returned no matching document.';
+      }
+    } catch (e) {
+      verifyError = 'ERP read-back failed: ' + (e.message || e);
+    }
+
+    if (!verifyOk) {
+      showModal(`
+        <div class="modal-handle"></div>
+        <div class="modal-header">
+          <div class="modal-title" style="color:#e11d48;">ERP Verification Failed</div>
+        </div>
+        <div class="modal-body">
+          <div class="error-msg">
+            <strong>${escHtml(submittedName)}</strong> appeared to submit, but the Frappe server could not confirm it.
+          </div>
+          <p class="mt-3" style="font-size:13px;color:#475569;">
+            <strong>Reason:</strong> ${escHtml(verifyError)}
+          </p>
+          <p class="mt-2" style="font-size:13px;color:#475569;">
+            Do <strong>not</strong> assume the SRT is posted. Open the Frappe desk to check this document, or retry submit.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline btn-full" onclick="closeModal()">Acknowledge</button>
+        </div>
+      `);
+      showToast('ERP verification failed for ' + submittedName, 'error', 6000);
+      return;  // stay on the form
+    }
+
     if (state === 'Approved By System') {
       showToast('All batches matched — Auto-Approved by System!', 'success', 4000);
     } else {
-      showToast('Submitted: ' + App.form.name + ' → ' + state, 'success');
+      showToast('Submitted to ERP: ' + submittedName + ' → ' + state, 'success', 4000);
     }
 
-    // Go back to dashboard
-    navigateTo('dashboard');
+    // Remember the just-submitted name so History can do a list-level
+    // double-check (some Frappe configs may delay list visibility).
+    App.history.lastSubmittedName = submittedName;
+    // Clear the form so the next "New SRT" tap starts blank, not
+    // pre-populated with the doc the user just submitted.
+    resetForm();
+    navigateTo('history');
   } catch (e) {
     showToast(e.message || 'Submit failed', 'error', 5000);
   } finally {
@@ -1115,6 +1691,8 @@ async function renderHistory() {
       return;
     }
 
+    // Today's rows get a yellow highlight + an explicit timestamp on the
+    // card so the user can sanity-check each newly created SRT against ERP.
     area.innerHTML = `
       <div class="refresh-bar">
         <button onclick="renderHistory()">Refresh</button>
@@ -1122,10 +1700,12 @@ async function renderHistory() {
       ${rows.map(r => {
         const pill = statusPill(r.workflow_state);
         const stateText = r.docstatus === 2 ? '<span class="pill pill-cancelled">Cancelled</span>' : pill;
-        return `<div class="card" onclick="viewSrt('${escHtml(r.name)}')">
+        const todayCls = isToday(r.creation) ? ' highlight-new' : '';
+        const ts = fmtDateTime(r.creation);
+        return `<div class="card${todayCls}" data-name="${escHtml(r.name)}" onclick="viewSrt('${escHtml(r.name)}')">
           <div class="flex items-center justify-between">
             <div style="min-width:0;flex:1;">
-              <div class="card-title truncate">${escHtml(r.item_name || r.item)}</div>
+              <div class="card-title truncate">${escHtml(r.item)} : ${escHtml(r.item_name || '')}</div>
               <div class="card-subtitle truncate">${escHtml(r.name)}</div>
             </div>
             ${stateText}
@@ -1134,9 +1714,33 @@ async function renderHistory() {
             <span class="card-label">${escHtml(r.default_warehouse || '')}</span>
             <span class="card-label">${fmtDate(r.posting_date)}</span>
           </div>
+          ${ts ? `<div class="card-row" style="margin-top:4px;">
+            <span class="card-label" style="font-size:11px;">Created</span>
+            <span class="card-label" style="font-size:12px;font-weight:600;color:#334155;">${escHtml(ts)}</span>
+          </div>` : ''}
         </div>`;
       }).join('')}
     `;
+
+    // List-level verification — if we just submitted something but the
+    // ERP-backed list doesn't include it, surface a hard warning.
+    const expected = App.history.lastSubmittedName;
+    if (expected) {
+      const inList = rows.some(r => r.name === expected);
+      if (!inList) {
+        showToast(
+          'WARNING: ' + expected + ' was saved but is not in the ERP history list. Verify in Frappe desk.',
+          'error', 8000
+        );
+      } else {
+        // Scroll to it so the user sees the highlight.
+        setTimeout(() => {
+          const card = area.querySelector(`.card[data-name="${expected}"]`);
+          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 50);
+      }
+      App.history.lastSubmittedName = null;  // consume one-shot
+    }
   } catch (e) {
     if (e.message && e.message.includes('SESSION_EXPIRED')) {
       showToast('Session expired', 'error');

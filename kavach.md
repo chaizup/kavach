@@ -234,6 +234,18 @@ The real ERPNext SR is the **audit-evidence document**; the SRT doc records the 
 | `get_uom_conversion(item_code, uom)` | Returns the conversion factor for `(item, uom)` — used when the operator changes Select UOM on a child row. |
 | `get_batch_current_state(item_code, batch_no)` | Returns current (warehouse, qty, valuation_rate) for a manually-typed batch. |
 
+### Reports shipped
+
+| Report | Type | ref_doctype | Folder |
+|---|---|---|---|
+| **Work Order Consumption Cost Analysis** | Script Report | Work Order | `kavach/stock_reconciliation_tracking/report/work_order_consumption_cost_analysis/` |
+
+Per-batch manufacturing consumption cost + batch-origin traceability (stock
+UOM), integrated with ERPNext (Work Order / Stock Entry / Batch / SLE / Serial
+and Batch Bundle) and chaizup_toc custom fields (`Work Order.custom_mrp`,
+`Item.custom_mrp`, `Work Order.workflow_state`, guarded by `has_column`).
+Read-only. See § 27 and the report's own `.md`.
+
 ---
 
 ## 3. Dependencies
@@ -1455,6 +1467,52 @@ v0.0.9 consolidates all operator workflow into the SRT Dashboard. The standalone
 - `test_form_save_runs_doctype_validate_chain` — DocType controller dispatch parity
 
 Cross-suite: 27/27 (5 + 8 + 4 + 10) across all 4 active suites.
+
+---
+
+## 27. Report — Work Order Consumption Cost Analysis (2026-06-20)
+
+First Script Report in the app. Lives at
+`kavach/stock_reconciliation_tracking/report/work_order_consumption_cost_analysis/`
+and opens at `/app/query-report/Work Order Consumption Cost Analysis`.
+
+**What:** explodes each **Work Order** into every **batch** consumed in its
+`Manufacture` Stock Entries and reports, per consumed batch (all in **stock
+UOM**): the produced FG batch + valuation, MRP (Item master + Work Order),
+planned/actual produced qty, the consumed batch qty + valuation + total value,
+and the consumed batch's **origin** voucher (Stock Entry / Purchase Receipt /
+Stock Reconciliation / Work Order) with purpose + inward rate. **Grain:** one
+row per (Work Order × Manufacture Stock Entry × consumed line × consumed batch).
+
+**Integrations (read-only):**
+- ERPNext: Work Order, Stock Entry, Stock Entry Detail, Item, Batch, UOM
+  Conversion Detail, Stock Ledger Entry, Serial and Batch Entry.
+- chaizup_toc custom fields: `Work Order.custom_mrp`, `Item.custom_mrp`,
+  `Work Order.workflow_state` — each guarded with `frappe.db.has_column` so the
+  report runs even where chaizup_toc is absent.
+
+**Reuses the app's canonical patterns:**
+- Batches from the **Serial and Batch Bundle** (`SLE.batch_no` is always NULL on
+  this site) — same crux as § 9 / `api.py`.
+- Batch **origin** = earliest SLE for (item, batch) — same logic as
+  `srt_dashboard._fetch_origin`; resolved with `ROW_NUMBER() … rn = 1`.
+- **Higher UOM** = largest `UOM Conversion Detail.conversion_factor > 1` — same
+  heuristic as `api._pick_higher_uom`.
+
+**Restricted areas (do NOT change without review):**
+- Keep every qty in **stock UOM**; never reintroduce a `Bin` / `Batch.batch_qty`
+  read for batch quantities (materialised views drift).
+- Keep cross-app custom-field reads guarded by `has_column`.
+- Report stays **read-only** — no writes, ever.
+- `get_columns()` order and the report `.md` column map must stay in lockstep.
+
+**Verified** 2026-06-20 on `dev.localhost`: direct `execute()` (32 cols, year of
+rows) + UI `frappe.desk.query_report.run` (127 rows / 10-day window). Spot-check
+`MFG-WO-2026-00686`: status `Completed : Taken In Production`; consumed SFG batch
+`691D38E` → 3960 g @ 0.154 = 611.27; origin `Stock Entry MAT-STE-04846` /
+`Manufacture` @ 0.137 (the earlier manufacture that produced the SFG batch —
+multi-level traceability). Component docs:
+`…/report/work_order_consumption_cost_analysis/work_order_consumption_cost_analysis.md`.
 
 ---
 

@@ -1,6 +1,6 @@
 # Stock Reconciliation Tracking — Module Reference
 
-The only module in the kavach app. Contains 6 DocTypes, 1 Page, 2 API files, and 1 Workspace.
+The only module in the kavach app. Contains 6 DocTypes, 1 Page, 1 Report, 2 API files, and 1 Workspace.
 
 See `apps/kavach/kavach.md` (app-root) for the full architecture, field map, restricted areas, sync block.
 
@@ -47,6 +47,13 @@ stock_reconciliation_tracking/     ← module root (this folder)
 │       ├── srt_dashboard.js       ← page controller (~2700 LOC)
 │       ├── srt_dashboard.html     ← Jinja shell (Tabulator CDN)
 │       └── srt_dashboard.md       ← comprehensive page docs
+├── report/                        ← Script Reports (read-only analytics)
+│   ├── report.md                  ← folder overview
+│   └── work_order_consumption_cost_analysis/
+│       ├── work_order_consumption_cost_analysis.json  ← Report meta
+│       ├── work_order_consumption_cost_analysis.py    ← execute() (Script Report)
+│       ├── work_order_consumption_cost_analysis.js    ← filters + cell rendering
+│       └── work_order_consumption_cost_analysis.md    ← component docs
 └── workspace/
     └── kavach/
         └── kavach.json            ← Kavach workspace (links to SRT, Settings, Dashboard)
@@ -283,4 +290,37 @@ The dashboard has gone through 19 iterations of polish in a single day's session
 
 **Page-level docs:** `page/srt_dashboard/srt_dashboard.md` (canonical, sync block at end).
 **Cross-suite regression:** 27/27 (Case 1/2 + gap + historical + dashboard) — locked at every iteration.
+
+---
+
+## Report: Work Order Consumption Cost Analysis (2026-06-20)
+
+First Script Report in the module, under `report/`. It explodes each **Work
+Order** into every **batch** it consumed in its `Manufacture` Stock Entries and
+reports the cost picture per consumed batch — all in **stock UOM** — alongside
+the produced FG batch, MRP (Item master + Work Order), planned/actual produced
+qty, and each consumed batch's **origin voucher** (Stock Entry / Purchase
+Receipt / Stock Reconciliation / Work Order) with its purpose and inward rate.
+
+**Grain:** one row per (Work Order × Manufacture Stock Entry × consumed SE line
+× consumed batch).
+
+**Why it lives in kavach:** like the SRT DocType + dashboard, it reads ERPNext
+stock data **read-only** through the canonical SLE → Serial and Batch Bundle →
+Serial and Batch Entry join (the site quirk where `SLE.batch_no` is always
+NULL). It reuses the same batch-origin logic as `srt_dashboard._fetch_origin`
+and the higher-UOM heuristic from `api._pick_higher_uom`.
+
+**Integrations:** ERPNext (Work Order, Stock Entry/Detail, Item, Batch, SLE,
+Serial and Batch Entry, UOM Conversion Detail) + chaizup_toc custom fields
+(`Work Order.custom_mrp`, `Item.custom_mrp`, `Work Order.workflow_state`), each
+guarded by `frappe.db.has_column` for cross-app safety.
+
+**Verified** 2026-06-20 on `dev.localhost` (direct `execute` + UI
+`query_report.run`). See `report/work_order_consumption_cost_analysis/
+work_order_consumption_cost_analysis.md` for the full column map, the site
+quirk, origin tracing, filters, and the verification spot-check.
+
+> RESTRICT: keep qty in stock UOM (never `Bin`/`Batch.batch_qty`); keep
+> custom-field reads guarded by `has_column`; reports stay read-only.
 
