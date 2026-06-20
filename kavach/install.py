@@ -238,6 +238,7 @@ def _ensure_workflow() -> None:
 # `kavach/` that holds the report's `report/<scrubbed>/` directory.
 _STANDARD_REPORTS = (
     ("Work Order Consumption Cost Analysis", "stock_reconciliation_tracking"),
+    ("Batch Moving Costing vs Origin Analysis", "stock_reconciliation_tracking"),
 )
 
 

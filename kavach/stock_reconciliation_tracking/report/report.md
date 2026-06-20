@@ -9,12 +9,18 @@ Standard Frappe report folder for the **Stock Reconciliation Tracking** module
 report/
 ├── __init__.py
 ├── report.md                                   ← this overview
-└── work_order_consumption_cost_analysis/       ← Script Report
+├── work_order_consumption_cost_analysis/       ← Script Report
+│   ├── __init__.py
+│   ├── work_order_consumption_cost_analysis.json
+│   ├── work_order_consumption_cost_analysis.py
+│   ├── work_order_consumption_cost_analysis.js
+│   └── work_order_consumption_cost_analysis.md
+└── batch_moving_costing_vs_origin_analysis/    ← Script Report
     ├── __init__.py
-    ├── work_order_consumption_cost_analysis.json
-    ├── work_order_consumption_cost_analysis.py
-    ├── work_order_consumption_cost_analysis.js
-    └── work_order_consumption_cost_analysis.md
+    ├── batch_moving_costing_vs_origin_analysis.json
+    ├── batch_moving_costing_vs_origin_analysis.py
+    ├── batch_moving_costing_vs_origin_analysis.js
+    └── batch_moving_costing_vs_origin_analysis.md
 ```
 
 ## Reports
@@ -22,6 +28,7 @@ report/
 | Report | Type | ref_doctype | What it does |
 |--------|------|-------------|--------------|
 | **Work Order Consumption Cost Analysis** | Script Report | Work Order | Per-batch consumption cost + batch-origin traceability for every Manufacture Stock Entry of a Work Order. See its `.md`. |
+| **Batch Moving Costing vs Origin Analysis** | Script Report | Batch | Per-batch inward vs outward valuation with a **Rate Match** verdict (cost drift) + batch origin. See its `.md`. |
 
 ## Conventions (read before adding a report here)
 

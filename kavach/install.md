@@ -71,9 +71,14 @@ All functions are idempotent and safe to re-run on every `bench migrate`. The `_
 
 ## 8. Standard-report self-heal (`_ensure_standard_reports`) — 2026-06-20
 
-Built-in reports (e.g. **Work Order Consumption Cost Analysis**) ship as source
-in `stock_reconciliation_tracking/report/<name>/` and must run via Frappe's
-`execute_module` path (`is_standard = "Yes"`). If the `tabReport` row is left as
+Built-in reports ship as source in `stock_reconciliation_tracking/report/<name>/`
+and must run via Frappe's `execute_module` path (`is_standard = "Yes"`). The
+reports registered in `_STANDARD_REPORTS` are:
+
+- **Work Order Consumption Cost Analysis**
+- **Batch Moving Costing vs Origin Analysis**
+
+If the `tabReport` row is left as
 `is_standard = "No"` with an empty `report_script` (a stale/restored row, or a
 record created in desk without a disk sync), Frappe instead takes the
 `execute_script` path and calls `safe_exec(report_script, …)` on a `NULL`

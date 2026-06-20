@@ -1,6 +1,6 @@
 # Stock Reconciliation Tracking — Module Reference
 
-The only module in the kavach app. Contains 6 DocTypes, 1 Page, 1 Report, 2 API files, and 1 Workspace.
+The only module in the kavach app. Contains 6 DocTypes, 1 Page, 2 Reports, 2 API files, and 1 Workspace.
 
 See `apps/kavach/kavach.md` (app-root) for the full architecture, field map, restricted areas, sync block.
 
@@ -49,11 +49,16 @@ stock_reconciliation_tracking/     ← module root (this folder)
 │       └── srt_dashboard.md       ← comprehensive page docs
 ├── report/                        ← Script Reports (read-only analytics)
 │   ├── report.md                  ← folder overview
-│   └── work_order_consumption_cost_analysis/
-│       ├── work_order_consumption_cost_analysis.json  ← Report meta
-│       ├── work_order_consumption_cost_analysis.py    ← execute() (Script Report)
-│       ├── work_order_consumption_cost_analysis.js    ← filters + cell rendering
-│       └── work_order_consumption_cost_analysis.md    ← component docs
+│   ├── work_order_consumption_cost_analysis/
+│   │   ├── work_order_consumption_cost_analysis.json  ← Report meta
+│   │   ├── work_order_consumption_cost_analysis.py    ← execute() (Script Report)
+│   │   ├── work_order_consumption_cost_analysis.js    ← filters + cell rendering
+│   │   └── work_order_consumption_cost_analysis.md    ← component docs
+│   └── batch_moving_costing_vs_origin_analysis/
+│       ├── batch_moving_costing_vs_origin_analysis.json
+│       ├── batch_moving_costing_vs_origin_analysis.py ← execute() (Script Report)
+│       ├── batch_moving_costing_vs_origin_analysis.js
+│       └── batch_moving_costing_vs_origin_analysis.md
 └── workspace/
     └── kavach/
         └── kavach.json            ← Kavach workspace (links to SRT, Settings, Dashboard)
@@ -323,4 +328,43 @@ quirk, origin tracing, filters, and the verification spot-check.
 
 > RESTRICT: keep qty in stock UOM (never `Bin`/`Batch.batch_qty`); keep
 > custom-field reads guarded by `has_column`; reports stay read-only.
+
+---
+
+## Report: Batch Moving Costing vs Origin Analysis (2026-06-20)
+
+Second Script Report — a **batch movement ledger**. **One row per (item, batch,
+voucher, direction)**: each row is a single INWARD *or* OUTWARD movement (the
+other side's columns blank); a Stock Reconciliation that moves a batch both ways
+in one voucher = **two rows**. Each row carries that movement's warehouse +
+valuation rate + total, the batch's **origin** voucher (timestamp / no / type /
+purpose / rate), this movement's voucher (no/type/purpose/timestamp), and a
+per-movement verdict **"Maintains Origin Rate?"** (Yes/No) — No = the rate
+changed from origin (the kavach audit signal).
+
+**Grain:** one row per (item, batch, voucher, direction). **Surfaced** in the
+Kavach workspace (Reports card link + shortcut tile).
+
+**Key data notes:** direction = SIGN of `Serial and Batch Entry.qty` (+in/−out);
+value = `SUM(ABS(stock_value_difference))`, **not** `outgoing_rate` (ALWAYS 0 on
+this site; rate sits in `incoming_rate`, svd = qty × incoming_rate — verified).
+Rows bounded to the [from_date, to_date] movement window; batch stock = closing
+balance as of to_date; origin = earliest-ever SLE (`ROW_NUMBER() … rn=1`). Same
+SLE → Serial and Batch Bundle join + higher-UOM heuristic as the WO-Consumption
+report.
+
+**Columns (28):** item + UOM block, batch stock, inward/outward warehouse +
+rate + total (one side blank per row), the **origin** block (timestamp, voucher
+no/type/purpose, rate), this movement's inward/outward voucher block
+(no/type/purpose + timestamp, `dd-mmm-yyyy hh:mm AM/PM`), and the verdict
+**Maintains Origin Rate?** ("Yes"/"No").
+
+**Verified** 2026-06-20 on `dev.localhost`: batch `B-CZPFG85-ABH-001` → 4 rows
+incl. reconciliation `MAT-RECO-2026-01884` split into IN + OUT (opposite side
+blank); 20-day window → 28 cols, 3473 rows (2165 OUT / 1308 IN; 2060 No / 1413
+Yes). See
+`report/batch_moving_costing_vs_origin_analysis/batch_moving_costing_vs_origin_analysis.md`.
+
+> RESTRICT: qty/value in stock UOM from the bundle (never `Bin`/`Batch.batch_qty`);
+> value stays `stock_value_difference`-based; report read-only.
 

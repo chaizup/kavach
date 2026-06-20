@@ -239,12 +239,20 @@ The real ERPNext SR is the **audit-evidence document**; the SRT doc records the 
 | Report | Type | ref_doctype | Folder |
 |---|---|---|---|
 | **Work Order Consumption Cost Analysis** | Script Report | Work Order | `kavach/stock_reconciliation_tracking/report/work_order_consumption_cost_analysis/` |
+| **Batch Moving Costing vs Origin Analysis** | Script Report | Batch | `kavach/stock_reconciliation_tracking/report/batch_moving_costing_vs_origin_analysis/` |
 
-Per-batch manufacturing consumption cost + batch-origin traceability (stock
-UOM), integrated with ERPNext (Work Order / Stock Entry / Batch / SLE / Serial
-and Batch Bundle) and chaizup_toc custom fields (`Work Order.custom_mrp`,
-`Item.custom_mrp`, `Work Order.workflow_state`, guarded by `has_column`).
-Read-only. See § 27 and the report's own `.md`.
+**WO Consumption Cost Analysis** — per-batch manufacturing consumption cost +
+batch-origin traceability (stock UOM), integrated with ERPNext (Work Order /
+Stock Entry / Batch / SLE / Serial and Batch Bundle) and chaizup_toc custom
+fields (`Work Order.custom_mrp`, `Item.custom_mrp`, `Work Order.workflow_state`,
+guarded by `has_column`). See § 27.
+
+**Batch Moving Costing vs Origin Analysis** — a batch **movement ledger** (one
+row per item × batch × voucher × direction, single-direction rows) with a
+per-movement **Maintains Origin Rate?** verdict that flags where a batch's cost
+drifted from origin, plus the batch origin voucher. See § 28.
+
+Both read-only; both registered in `install.py → _STANDARD_REPORTS`.
 
 ---
 
@@ -1513,6 +1521,56 @@ rows) + UI `frappe.desk.query_report.run` (127 rows / 10-day window). Spot-check
 `Manufacture` @ 0.137 (the earlier manufacture that produced the SFG batch —
 multi-level traceability). Component docs:
 `…/report/work_order_consumption_cost_analysis/work_order_consumption_cost_analysis.md`.
+
+---
+
+## 28. Report — Batch Moving Costing vs Origin Analysis (2026-06-20)
+
+Second Script Report. Lives at
+`kavach/stock_reconciliation_tracking/report/batch_moving_costing_vs_origin_analysis/`
+and opens at `/app/query-report/Batch Moving Costing vs Origin Analysis`. Also
+surfaced in the Kavach workspace (link under "Reports" + a shortcut tile,
+per user request).
+
+**What (a batch MOVEMENT LEDGER):** one row per **(item, batch, voucher,
+direction)**. Each row is a single **inward** *or* **outward** movement, all in
+**stock UOM**, with the opposite direction's columns **blank**. An ordinary
+voucher = one row; a **Stock Reconciliation** that moves the same batch both
+ways in one voucher = **two rows**. A "movement" is any Stock Ledger voucher
+(Stock Entry / Stock Reconciliation / Delivery Note / Purchase Receipt …). Each
+row reports this movement's warehouse + valuation **rate** + **total**, the
+batch's **origin** block (timestamp + voucher no/type/purpose + rate), this
+movement's voucher block (no/type/purpose + timestamp `dd-mmm-yyyy hh:mm AM/PM`),
+current batch stock, and the verdict:
+- **Maintains Origin Rate?** — Yes / No: did *this* movement keep the batch's
+  **origin** valuation rate, or did the rate change in the middle? No = cost
+  drift (mid-life Stock Reconciliation re-rate) — the audit signal. Read a
+  batch's time-ordered rows: a Yes→No flip pinpoints where the rate changed.
+
+**Reuses the app's canonical patterns:**
+- Direction = SIGN of `Serial and Batch Entry.qty` (+in/−out) from the
+  **Serial and Batch Bundle** (`SLE.batch_no` NULL).
+- **Value from `stock_value_difference`**, NOT `outgoing_rate` (always 0 on this
+  site; per-entry rate lives in `incoming_rate`, and svd = qty × incoming_rate —
+  verified live). Rate = value / qty.
+- Batch **origin** = earliest SLE via `ROW_NUMBER() … rn=1` (same as § 27).
+- **Higher UOM** = largest `conversion_factor > 1` (`api._pick_higher_uom`).
+
+**Restricted areas (do NOT change without review):**
+- Keep every qty/value in **stock UOM** from the bundle; never `Bin` /
+  `Batch.batch_qty`.
+- Value stays `stock_value_difference`-based (robust to the zero `outgoing_rate`).
+- **Single-direction rows are the required grain** — don't collapse the
+  reconciliation in+out pair back into one row.
+- Report stays **read-only**.
+- `get_columns()` order and the report `.md` column map must stay in lockstep.
+
+**Verified** 2026-06-20 on `dev.localhost`: batch `B-CZPFG85-ABH-001` → 4 rows
+incl. reconciliation `MAT-RECO-2026-01884` split into IN + OUT (opposite side
+blank, both `Yes`); 20-day window → 28 cols, 3473 rows (2165 OUT / 1308 IN;
+2060 No / 1413 Yes). "No" example `CZ/ITEM-00043` batch `B-…-00001`: movement
+0.17514 vs origin 0.17786 on `MAT-STE-04959`. Component docs:
+`…/report/batch_moving_costing_vs_origin_analysis/batch_moving_costing_vs_origin_analysis.md`.
 
 ---
 
