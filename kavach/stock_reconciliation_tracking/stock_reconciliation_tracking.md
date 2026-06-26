@@ -16,8 +16,11 @@ stock_reconciliation_tracking/     ← module root (this folder)
 ├── doctype/
 │   ├── stock_reconciliation_srt/  ← parent (submittable, workflow-enabled)
 │   │   ├── stock_reconciliation_srt.json
-│   │   ├── stock_reconciliation_srt.py   ← controller (954 LOC): validate + on_submit + on_cancel
+│   │   ├── stock_reconciliation_srt.py   ← controller: validate + on_submit (ATOMIC) + on_cancel
+│   │   │                                    + ensure_linked_sr / backfill_missing_sr (2026-06-26)
 │   │   ├── stock_reconciliation_srt.js   ← form controller
+│   │   ├── stock_reconciliation_srt_list.js ← list view: linked-SR hyperlink + Super-Admin relink (2026-06-26)
+│   │   ├── stock_reconciliation_srt_list.md ← list view component docs
 │   │   └── stock_reconciliation_srt.md   ← DocType docs
 │   ├── batch_list/                ← child of Stock Reconciliation SRT
 │   │   ├── batch_list.json
@@ -367,4 +370,25 @@ Yes). See
 
 > RESTRICT: qty/value in stock UOM from the bundle (never `Bin`/`Batch.batch_qty`);
 > value stays `stock_value_difference`-based; report read-only.
+
+---
+
+## Foolproof SR creation + Super-Admin relink/backfill (2026-06-26)
+
+**Bug report:** "sometimes the ERPNext Stock Reconciliation is not created after admin approval when submitted via API/OAuth." A submitted SRT could land at **Admin Approval** with **no linked draft SR**. (Approved-By-System / Case 1 SRTs legitimately have no SR — those are NOT affected.)
+
+**Root cause:** `_create_erpnext_sr_draft` ran `frappe.db.commit()` *mid-submit*, flushing the SRT at `docstatus=1` before `linked_erpnext_sr` was written. Any transient error after that commit (more likely under concurrent OAuth load → "sometimes") left an orphan.
+
+**What changed (controller `stock_reconciliation_srt.py`):**
+1. **Atomic `on_submit`** — removed the mid-submit commit + `sr.reload()`. SR creation + back-link now commit (or roll back) with the submit transaction; on failure the SRT stays Draft for retry.
+2. **`ensure_linked_sr()`** — idempotent self-heal reused by `on_submit` and the backfill. No-op on a valid link; never creates an SR for Approved By System.
+3. **`backfill_missing_sr()` + `get_backfill_candidates()`** — whitelisted, Srt-Super-Admin-gated relink. Default scan fixes only **empty** links; explicit selection also repairs links to a cancelled/deleted SR. **Preserves the SRT's original posting date + time** on the recreated SR.
+
+**New UI (`stock_reconciliation_srt_list.js`):** `linked_erpnext_sr` is now an `in_list_view` hyperlink column (red "⚠ Missing — relink" on orphans, muted "— (system-approved)" for Case 1) + a **Relink ERPNext SR** button group ("Scan & Fix All Missing", "Fix Selected"). See `doctype/stock_reconciliation_srt/stock_reconciliation_srt_list.md`.
+
+**Tests:** `tests/test_backfill_relink.py` (3/3). See DocType doc § 9b for the full writeup, restricted areas, and the pre-existing Case-1 precision caveat.
+
+**Deploy:** `bench build --app kavach` (new list.js) + `bench --site <site> migrate` (in_list_view JSON) + `clear-cache`.
+
+> RESTRICT: never re-add `frappe.db.commit()` inside `on_submit`/`ensure_linked_sr`/`_create_erpnext_sr_draft`; never backfill Approved-By-System; never build the relink SR with `nowdate()/nowtime()`.
 

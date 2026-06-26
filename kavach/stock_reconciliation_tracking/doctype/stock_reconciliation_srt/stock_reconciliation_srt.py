@@ -33,12 +33,24 @@
 #     does NOT mutate child rows' stored qty / rate / warehouse — those are
 #     set by the JS autopopulate + the row's row-level edits. Mutating them
 #     here would race the form and confuse users.
-#   - on_submit() creates the real ERPNext Stock Reconciliation INSIDE
-#     a try/except + frappe.db.commit() pattern. If the SR submit fails,
-#     this SRT doc is ALREADY at docstatus=1 (post-`db.commit()`), so the
-#     user gets a clear error and can either cancel + retry or manually
-#     post the SR. Don't try to rollback the SRT — Frappe v16 doesn't
-#     handle nested submit-rollback cleanly.
+#   - on_submit() creates the DRAFT ERPNext SR **ATOMICALLY** (2026-06-26).
+#     It delegates to ensure_linked_sr() and does NOT call frappe.db.commit()
+#     mid-submit. Either the whole submit succeeds — SRT docstatus=1 AND the
+#     draft ERPNext SR AND the linked_erpnext_sr back-link are written in ONE
+#     transaction — or it ALL rolls back and the SRT stays Draft for the admin
+#     to retry. This eliminates the old "admin-approved but no SR linked"
+#     half-state (the bug report: SR sometimes not created on OAuth/API
+#     approval). The PREVIOUS design committed inside on_submit so the SRT
+#     stayed submitted even if SR creation failed — that commit was exactly
+#     what produced the orphan half-state, so it was removed.
+#       RESTRICT: do NOT re-introduce a frappe.db.commit() inside on_submit
+#       or _create_erpnext_sr_draft. It breaks the atomicity guarantee and
+#       resurrects the orphan bug.
+#   - ensure_linked_sr() is the idempotent self-heal (2026-06-26). Safe to
+#     call repeatedly: from on_submit, AND from the Srt Super Admin "Relink
+#     Missing ERPNext SR" list-view action (module fn backfill_missing_sr).
+#     It NEVER creates an SR for the Approved By System (Case 1) path, and is
+#     a no-op when a valid (non-cancelled) link already exists.
 #
 # DANGER ZONE:
 #   - Don't ignore `custom_remarks` on the ERPNext SR — it's a MANDATORY
@@ -262,23 +274,32 @@ class StockReconciliationSRT(Document):
            in validate): skip the ERPNext SR entirely, route to
            'Approved By System' workflow state. No human approval needed.
 
-        2. Normal path (any real-delta ticks): create a DRAFT ERPNext SR.
-           Per 2026-05-21 workflow spec, the actual SR submit is gated
-           separately to Srt Super Admin via submit_linked_sr().
+        2. Normal path (any real-delta ticks): create a DRAFT ERPNext SR
+           via ensure_linked_sr(). Per 2026-05-21 workflow spec, the actual
+           SR submit is gated separately to Srt Super Admin via
+           submit_linked_sr().
+
+        ATOMICITY (2026-06-26 — the foolproofing fix):
+          This whole method runs inside the submit transaction. There is NO
+          frappe.db.commit() here or in ensure_linked_sr/_create_erpnext_sr_draft.
+          So if SR creation raises, the `raise` below propagates, the submit
+          transaction rolls back, and the SRT stays Draft — the admin simply
+          retries. We NEVER leave the SRT "approved" (docstatus=1) without a
+          linked SR. The previous code committed mid-submit, which is what
+          allowed the orphan half-state the bug report describes.
         """
         if getattr(self.flags, "all_matched_no_delta", False):
             self._route_to_system_approved()
             return
         try:
-            sr_name = self._create_erpnext_sr_draft()
-            self.db_set("linked_erpnext_sr", sr_name, update_modified=False)
+            result = self.ensure_linked_sr()
             # Stamp the admin approver — the user who is moving the SRT
             # from Draft to Admin Approval. Auto-set on every submit;
             # if the SRT is later amended and re-submitted, this gets
             # over-written with whoever did THAT submit (correct audit).
             self.db_set("admin_approved_by", frappe.session.user, update_modified=False)
             frappe.msgprint(
-                _("Draft ERPNext Stock Reconciliation <a href='/app/stock-reconciliation/{0}'>{0}</a> created. Awaiting Srt Super Admin approval to submit.").format(sr_name),
+                _("Draft ERPNext Stock Reconciliation <a href='/app/stock-reconciliation/{0}'>{0}</a> created. Awaiting Srt Super Admin approval to submit.").format(result["sr_name"]),
                 indicator="orange", alert=True,
             )
         except Exception:
@@ -797,6 +818,54 @@ class StockReconciliationSRT(Document):
         return 1.0
 
     # ── ERPNext SR creation ─────────────────────────────────────────────
+    def ensure_linked_sr(self, force_recreate_if_broken=False):
+        """Idempotent self-heal: GUARANTEE this SRT has a usable linked draft
+        ERPNext Stock Reconciliation. Added 2026-06-26 (foolproofing fix).
+
+        This is the single source of truth for "does this SRT have its SR?".
+        on_submit() calls it (normal-delta path) and the Srt Super Admin
+        list-view "Relink Missing ERPNext SR" action calls it through
+        backfill_missing_sr(). Safe to call any number of times.
+
+        Returns a dict: {"sr_name": str|None, "created": bool, "action": str}
+          action ∈ {
+            "skipped_case1"        — Approved By System: no SR ever needed,
+            "already_linked"       — valid (non-cancelled) SR already linked,
+            "broken_link_untouched"— link points at a missing/cancelled SR
+                                      but force_recreate_if_broken=False,
+            "created"              — fresh draft SR created + linked,
+            "recreated"            — link was broken; new draft created + repointed,
+          }
+
+        NEVER creates an SR for the Approved By System (Case 1) path — those
+        legitimately have no SR (every ticked batch matched current stock).
+
+        ATOMICITY: does NOT commit. The caller's transaction owns the write,
+        so the new SR + the linked_erpnext_sr back-link land together (or roll
+        back together). See on_submit docstring.
+        """
+        # Case 1 (system-approved) never needs an ERPNext SR.
+        if (self.workflow_state or "").strip() == "Approved By System":
+            return {"sr_name": None, "created": False, "action": "skipped_case1"}
+
+        existing = (self.linked_erpnext_sr or "").strip()
+        if existing:
+            sr_docstatus = frappe.db.get_value(
+                "Stock Reconciliation", existing, "docstatus")
+            # Valid link = SR row exists AND is not cancelled (0 draft, 1 submitted).
+            if sr_docstatus is not None and sr_docstatus != 2:
+                return {"sr_name": existing, "created": False,
+                        "action": "already_linked"}
+            # Link points at a deleted (None) or cancelled (2) SR.
+            if not force_recreate_if_broken:
+                return {"sr_name": existing, "created": False,
+                        "action": "broken_link_untouched"}
+
+        sr_name = self._create_erpnext_sr_draft()
+        self.db_set("linked_erpnext_sr", sr_name, update_modified=False)
+        return {"sr_name": sr_name, "created": True,
+                "action": "recreated" if existing else "created"}
+
     def _create_erpnext_sr_draft(self):
         """Builds a real ERPNext Stock Reconciliation containing only
         rows where 'Do Reconcile' is ticked. INSERTS but does NOT submit.
@@ -905,13 +974,24 @@ class StockReconciliationSRT(Document):
             sr.flags.ignore_permissions = True
             sr.insert()
             # Mirror ERPNext's computed current_valuation_rate → valuation_rate
-            # so the eventual SR submit moves only qty, not rate.
+            # so the eventual SR submit moves only qty, not rate. db_set issues
+            # an UPDATE inside the CURRENT transaction; it is persisted when the
+            # caller (on_submit's submit txn, or backfill_missing_sr's per-item
+            # commit) commits — we deliberately do NOT commit here.
             for it in sr.items:
                 existing_rate = flt(it.current_valuation_rate)
                 if existing_rate > 0:
                     it.db_set("valuation_rate", existing_rate, update_modified=False)
-            frappe.db.commit()
-            sr.reload()
+            # ATOMICITY (2026-06-26): NO frappe.db.commit() and NO sr.reload()
+            # here. The previous in-method commit broke submit atomicity — it
+            # flushed the SRT at docstatus=1 BEFORE the linked_erpnext_sr
+            # back-link was written, so any transient error in the remainder of
+            # the request left an "approved but unlinked" orphan SRT (+ an
+            # orphan draft SR). Keeping the insert uncommitted means the SR and
+            # the back-link commit together with the submit, or roll back
+            # together. sr.name is already populated by insert(); no reload
+            # needed since we only return the name.
+            # RESTRICT: do NOT add frappe.db.commit() back here.
             return sr.name
         except Exception:
             raise
@@ -1018,3 +1098,201 @@ def submit_linked_sr(srt_name):
     """
     doc = frappe.get_doc("Stock Reconciliation SRT", srt_name)
     return doc.submit_linked_sr()
+
+
+# =============================================================================
+# Backfill / Relink — Srt Super Admin recovery for "approved but no SR" (2026-06-26)
+# =============================================================================
+#
+# WHAT THIS IS FOR
+#   Belt-and-braces recovery tool for the bug report: "sometimes the ERPNext
+#   Stock Reconciliation is not created after admin approval when submitted via
+#   API/OAuth". The on_submit atomicity fix (no mid-submit commit) PREVENTS new
+#   occurrences. These functions CLEAN UP any pre-existing orphan AND give the
+#   Srt Super Admin a one-click list-view action so they never need the desk
+#   console.
+#
+#   An SRT is a BACKFILL CANDIDATE when ALL of:
+#     - docstatus = 1 (admin-approved / submitted),
+#     - workflow_state NOT IN ('Approved By System', 'Close')  — Approved By
+#       System (Case 1) legitimately has no SR; Close is terminal,
+#     - linked_erpnext_sr is empty  (the "doesnt have link" case the user named)
+#       OR (only when explicitly repairing) points at a missing/cancelled SR.
+#
+#   The fix re-uses StockReconciliationSRT.ensure_linked_sr() — the SAME code
+#   path on_submit uses — so a backfilled SR is byte-for-byte what a clean
+#   approval would have produced (set_posting_time guard, two-pass rate mirror,
+#   custom_remarks audit string, all intact).
+#
+# POSTING-DATE FIDELITY (user requirement, 2026-06-26):
+#   A relinked SR MUST carry the SAME posting_date + posting_time the operator
+#   entered when they created the SRT — NOT the date the super admin clicks
+#   relink. This is guaranteed for free because _create_erpnext_sr_draft reads
+#   self.posting_date / self.posting_time off the SRT doc (the stored, possibly
+#   backdated values) and sets sr.set_posting_time = 1 so ERPNext's
+#   validate_posting_time can't overwrite them with now(). The backfill loads
+#   the SRT fresh with frappe.get_doc, so those stored values are exactly what
+#   the operator typed. Verified by tests/test_backfill_relink.py.
+#   RESTRICT: do NOT build the SR here with nowdate()/nowtime() — always go
+#   through ensure_linked_sr → _create_erpnext_sr_draft so the original posting
+#   timestamp is preserved.
+#
+# RESTRICT:
+#   - Gated to Srt Super Admin / System Manager / Administrator. Do NOT widen.
+#   - NEVER backfill an 'Approved By System' SRT — it has no delta to post.
+#   - Default "scan all" only touches EMPTY links (matches the user's
+#     "only which record doesnt have link"). Broken-link repair (link → a
+#     cancelled/deleted SR) happens ONLY for rows the super admin explicitly
+#     selected, to avoid silently re-creating an SR someone cancelled on purpose.
+# =============================================================================
+
+# Workflow states that must NEVER be backfilled (no ERPNext SR is expected).
+_BACKFILL_EXCLUDED_STATES = ("Approved By System", "Close")
+
+
+def _can_backfill_missing_sr():
+    """Permission gate for the relink/backfill action."""
+    if frappe.session.user == "Administrator":
+        return True
+    return bool({"System Manager", "Srt Super Admin"} & set(frappe.get_roles()))
+
+
+def _find_backfill_candidates(include_broken=False):
+    """Return candidate SRT rows that are admin-approved but have no usable
+    linked ERPNext SR.
+
+    include_broken=False (default, used by "scan & fix all"): only SRTs whose
+    link is EMPTY.
+    include_broken=True: ALSO include SRTs whose link points at a deleted or
+    cancelled (docstatus=2) Stock Reconciliation — used only to PREVIEW the
+    full picture in the dialog; actual repair of broken links still requires
+    explicit selection + repair_broken=1.
+    """
+    rows = frappe.db.sql(
+        """
+        SELECT s.name, s.item, s.item_name, s.default_warehouse,
+               s.posting_date, s.workflow_state, s.owner,
+               s.linked_erpnext_sr, sr.docstatus AS sr_docstatus
+        FROM `tabStock Reconciliation SRT` s
+        LEFT JOIN `tabStock Reconciliation` sr ON sr.name = s.linked_erpnext_sr
+        WHERE s.docstatus = 1
+          AND COALESCE(s.workflow_state, '') NOT IN %(excluded)s
+          AND (
+                s.linked_erpnext_sr IS NULL OR s.linked_erpnext_sr = ''
+                OR (%(include_broken)s = 1 AND (sr.name IS NULL OR sr.docstatus = 2))
+              )
+        ORDER BY s.posting_date DESC, s.creation DESC
+        """,
+        {"excluded": _BACKFILL_EXCLUDED_STATES,
+         "include_broken": 1 if include_broken else 0},
+        as_dict=True,
+    )
+    for r in rows:
+        if not (r.get("linked_erpnext_sr") or "").strip():
+            r["reason"] = "no_link"
+        else:
+            r["reason"] = "broken_link"  # link → missing/cancelled SR
+    return rows
+
+
+@frappe.whitelist()
+def get_backfill_candidates():
+    """List-view preview: how many SRTs are admin-approved but missing their
+    ERPNext SR. Returns {"count": N, "rows": [...]} including both empty-link
+    and broken-link rows (each tagged with `reason`) so the Srt Super Admin can
+    see the full picture before acting.
+    """
+    if not _can_backfill_missing_sr():
+        frappe.throw(_(
+            "Only Srt Super Admin or System Manager can scan for SRTs with a "
+            "missing linked ERPNext Stock Reconciliation."))
+    rows = _find_backfill_candidates(include_broken=True)
+    return {"count": len(rows), "rows": rows}
+
+
+@frappe.whitelist()
+def backfill_missing_sr(srt_names=None, repair_broken=None):
+    """Create the missing DRAFT ERPNext Stock Reconciliation for admin-approved
+    SRTs that don't have one — the Srt Super Admin "Relink Missing ERPNext SR"
+    list-view action.
+
+    Args:
+      srt_names: optional JSON list / Python list of SRT names. When provided,
+                 ONLY those are processed (the super admin selected specific
+                 rows) and broken-link repair defaults ON. When omitted, ALL
+                 empty-link candidates are scanned and fixed.
+      repair_broken: "1"/1 to also re-create SRs for links that point at a
+                 missing/cancelled SR. Defaults ON for explicit selection, OFF
+                 for a blanket scan.
+
+    Returns a per-row list: [{name, ok, action|error, sr_name?}]. No global
+    rollback — each row is committed independently so a single failure never
+    discards the successes (mirrors bulk_approve_srt).
+    """
+    if not _can_backfill_missing_sr():
+        frappe.throw(_(
+            "Only Srt Super Admin or System Manager can relink a missing "
+            "ERPNext Stock Reconciliation."))
+
+    explicit = bool(srt_names)
+    if isinstance(srt_names, str):
+        import json
+        srt_names = json.loads(srt_names) if srt_names.strip() else None
+
+    # Broken-link repair: default ON when the user picked specific rows,
+    # OFF for a blanket "fix all empty links" scan — unless overridden.
+    if repair_broken is None:
+        repair = explicit
+    else:
+        repair = bool(int(repair_broken))
+
+    if not srt_names:
+        srt_names = [r["name"] for r in _find_backfill_candidates(include_broken=False)]
+
+    results = []
+    for name in srt_names:
+        try:
+            doc = frappe.get_doc("Stock Reconciliation SRT", name)
+
+            # Re-validate eligibility server-side (never trust the caller).
+            if doc.docstatus != 1:
+                results.append({"name": name, "ok": False,
+                                "error": _("Not admin-approved (docstatus {0}).")
+                                .format(doc.docstatus)})
+                continue
+            if (doc.workflow_state or "").strip() in _BACKFILL_EXCLUDED_STATES:
+                results.append({"name": name, "ok": False,
+                                "error": _("State {0} never needs an ERPNext SR.")
+                                .format(doc.workflow_state)})
+                continue
+
+            res = doc.ensure_linked_sr(force_recreate_if_broken=repair)
+
+            # Recovery for the rare "Super Admin Approval but no SR" anomaly:
+            # that state asserts the SR was already submitted, but we just had
+            # to create it fresh — so the ledger was never posted. Roll the
+            # workflow back to Admin Approval so the existing "Submit Linked
+            # ERPNext SR" button works, and leave an audit note.
+            if res["created"] and (doc.workflow_state or "").strip() == "Super Admin Approval":
+                note = (f"[AUTO-RELINK via list view {frappe.utils.now()} by "
+                        f"{frappe.session.user}] Draft ERPNext SR "
+                        f"{res['sr_name']} (re)created by backfill; workflow "
+                        f"rolled back to Admin Approval so a Super Admin can "
+                        f"submit the ledger posting.")
+                doc.db_set("workflow_state", "Admin Approval", update_modified=False)
+                doc.db_set("super_admin_remark",
+                           (doc.super_admin_remark or "") + "\n" + note,
+                           update_modified=False)
+                res["action"] = res["action"] + "+state_rolled_back_to_admin_approval"
+
+            frappe.db.commit()
+            results.append({"name": name, "ok": True,
+                            "action": res["action"], "sr_name": res["sr_name"]})
+        except Exception as e:
+            frappe.db.rollback()
+            frappe.log_error(
+                frappe.get_traceback(),
+                f"SRT {name}: backfill_missing_sr failed",
+            )
+            results.append({"name": name, "ok": False, "error": str(e)})
+    return results

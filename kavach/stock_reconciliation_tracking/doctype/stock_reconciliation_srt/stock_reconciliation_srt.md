@@ -149,6 +149,35 @@ done
 | test_historical_stock | 4 | as-of posting_date/time fetch |
 | test_srt_dashboard | 10 | 11 server endpoints + form save/concurrency |
 
+## 9b. Foolproofing — atomic SR creation + Super-Admin relink/backfill (2026-06-26)
+
+**Bug report:** "sometimes the ERPNext Stock Reconciliation is not created after admin approval when submitted via API/OAuth." A submitted SRT could sit at **Admin Approval** with **no linked draft SR** (orphan half-state). NOTE: this is distinct from **Approved By System** (Case 1) — those *correctly* have no SR because every counted batch matched current stock; only **Admin Approval** records are supposed to carry a draft SR.
+
+**Root cause:** `_create_erpnext_sr_draft` called `frappe.db.commit()` *mid-submit*. That flushed the SRT at `docstatus=1` **before** `linked_erpnext_sr` was written. Any transient error in the remainder of the request (lock wait, `sr.reload()`, network — more frequent under concurrent OAuth load → "sometimes") left the SRT approved-but-unlinked (plus an orphan draft SR). The old top-of-file comment even *documented* this as intended ("SRT is ALREADY at docstatus=1 post-commit") — that intent was the bug.
+
+**Fix 1 — atomic `on_submit`:** removed the mid-submit `frappe.db.commit()` + `sr.reload()`. `on_submit` now delegates to **`ensure_linked_sr()`** inside the submit transaction. Either everything (SRT `docstatus=1` + draft SR + back-link) commits together, or it ALL rolls back and the SRT stays **Draft** for the admin to retry. No orphan half-state is possible on the normal path.
+
+**Fix 2 — `ensure_linked_sr(force_recreate_if_broken=False)` idempotent self-heal** (new instance method):
+- Returns `{sr_name, created, action}` where `action ∈ {skipped_case1, already_linked, broken_link_untouched, created, recreated}`.
+- No-op when a valid (non-cancelled) link already exists. **NEVER** creates an SR for **Approved By System** (Case 1).
+- Reused by both `on_submit` AND the backfill tool, so a relinked SR is byte-for-byte a clean-approval SR (set_posting_time guard, two-pass rate mirror, custom_remarks — all intact).
+
+**Fix 3 — Super-Admin relink/backfill from the list view** (module-level, whitelisted):
+- `get_backfill_candidates()` → `{count, rows}` preview; `backfill_missing_sr(srt_names=None, repair_broken=None)` → per-row results. Both gated to **Srt Super Admin / System Manager / Administrator** (`_can_backfill_missing_sr`).
+- **Candidate** = `docstatus=1` AND `workflow_state NOT IN ('Approved By System','Close')` AND link empty — *or*, only for explicitly-selected rows, link → a missing/cancelled SR (`repair_broken`).
+- Blanket "Scan & Fix All" only touches **empty** links (the user's "only which record doesn't have link"). Per-row `frappe.db.commit()` so partial successes survive (mirrors `bulk_approve_srt`).
+- Rare anomaly recovery: a `Super Admin Approval` record with no SR is rolled back to `Admin Approval` (+ audit remark) after the draft is created, so the existing "Submit Linked ERPNext SR" button works.
+- `stock_reconciliation_srt_list.js` (see `stock_reconciliation_srt_list.md`) renders `linked_erpnext_sr` as a hyperlink column — red **"⚠ Missing — relink"** on orphans, muted **"— (system-approved)"** for Case 1 — and adds the **Relink ERPNext SR** button group.
+
+**Posting-date fidelity (hard user requirement):** a relinked SR inherits the SRT's **original** `posting_date` **and** `posting_time` (even backdated days earlier) — never the relink-click time — because it goes through the same `_create_erpnext_sr_draft` (`sr.set_posting_time = 1` + `sr.posting_date/time = self.posting_date/time`). Proven by `test_backfill_relink.py::test_backfill_preserves_posting_date_and_time` (`2026-06-23 09:30:00 → SR 2026-06-23 09:30:00`).
+
+**Tests:** `kavach/tests/test_backfill_relink.py` (3/3 on dev.localhost): (1) posting date+time fidelity on relink, (2) idempotent on a valid link (no duplicate SR), (3) Approved-By-System never backfilled. The unchanged `test_case1_case2.test_regression_normal_submit` + `test_sr_posting_mirrors_srt` still pass (atomic SR creation + posting mirror intact).
+
+**RESTRICT (new):**
+- Do NOT re-introduce `frappe.db.commit()` inside `on_submit` / `ensure_linked_sr` / `_create_erpnext_sr_draft` — it breaks atomicity and resurrects the orphan bug.
+- Do NOT backfill **Approved By System** SRTs (no delta to post). Keep them in `_BACKFILL_EXCLUDED_STATES`.
+- Do NOT build the relink SR with `nowdate()/nowtime()` — always route through `ensure_linked_sr → _create_erpnext_sr_draft` so the operator's posting timestamp is preserved.
+
 ## 10. Sync block
 
 ```
@@ -169,9 +198,20 @@ CASE1-ON-SAVE (v0.0.9.35):
 
 LIFECYCLE:
   validate (9 gates) → on_update (Case1 auto-submit on save with live re-verify)
-  on_submit (fallback Case1 short-circuit OR _create_erpnext_sr_draft + mirror rate + advance to Admin Approval)
+  on_submit (fallback Case1 short-circuit OR ensure_linked_sr() → draft SR + mirror rate + advance to Admin Approval)
+            ATOMIC (2026-06-26): NO frappe.db.commit() mid-submit — SRT docstatus=1 + draft SR +
+            linked_erpnext_sr commit together or roll back together (SRT stays Draft on failure)
   submit_linked_sr (Srt Super Admin) → SABB patches + Stock Settings toggle + sr._submit() → advance to Super Admin Approval
   on_cancel → if SR draft delete; if SR submitted cascade-cancel (Super Admin / System Manager only)
+
+RELINK / BACKFILL (2026-06-26 — Srt Super Admin recovery, list view):
+  ensure_linked_sr(force_recreate_if_broken) — idempotent self-heal; create/relink draft SR;
+            NEVER for Approved By System; reused by on_submit AND backfill
+  backfill_missing_sr(srt_names, repair_broken) — list-view "Relink Missing ERPNext SR";
+            preserves the SRT's original posting_date + posting_time on the new SR
+  get_backfill_candidates() — list-view scan/preview {count, rows}
+  _can_backfill_missing_sr — Srt Super Admin / System Manager / Administrator
+  _BACKFILL_EXCLUDED_STATES = ("Approved By System", "Close")  ← never backfilled
 
 KEY HELPERS:
   _resolve_row_cf  — 4-step fallback for child row conversion factor
@@ -184,6 +224,11 @@ DEPENDENCIES (read sources):
   erpnext: Stock Reconciliation, Bin, SLE, Serial and Batch Bundle, Account, transaction_base.validate_posting_time
   same-app: SRT Settings (gap), Batch List (child), api.py (3 methods), srt_dashboard page
 
-TESTS: 28/28 (test_case1_case2 6, test_srt_settings_gap 8, test_historical_stock 4, test_srt_dashboard 10)
+TESTS: test_case1_case2 6, test_srt_settings_gap 8, test_historical_stock 4, test_srt_dashboard 10,
+       test_backfill_relink 3 (NEW 2026-06-26: posting date+time fidelity on relink, idempotent on valid link, skip Approved-By-System)
+       CAVEAT: on dev.localhost, the 3 Case-1 tests (test_case1_happy / _preserves_admin_remark /
+       _cancel_auto_approved) currently fail on a PRE-EXISTING higher-UOM precision guard
+       ("Total Current Stock ... in Higher UOM" 0.001 vs 0.00089) — verified identical on the
+       unmodified controller (git stash), unrelated to the 2026-06-26 atomic/relink work.
 DOCS:  this file (DocType), ../../../kavach.md (app), ../../../kavach/kavach.md (module), ../../page/srt_dashboard/srt_dashboard.md (UI)
 ```

@@ -169,6 +169,23 @@ System Manager + Administrator bypass all three. Enforcement happens in BOTH pla
 
 ---
 
+## Foolproof SR creation + Super-Admin relink/backfill (2026-06-26)
+
+**Bug:** via API/OAuth approval, an SRT sometimes landed at **Admin Approval** with **no linked draft ERPNext SR** (orphan half-state). Approved-By-System (Case 1) SRTs are *not* this bug — they correctly never get an SR because every counted batch matched current stock.
+
+**Root cause:** `_create_erpnext_sr_draft` did `frappe.db.commit()` *inside* `on_submit`, flushing `docstatus=1` before the `linked_erpnext_sr` back-link was written. A transient error after that commit (lock wait / reload / network — likelier under concurrent OAuth load → "sometimes") stranded the SRT approved-but-unlinked.
+
+**The fix (3 parts):**
+1. **Atomic `on_submit`** — removed the mid-submit commit; the draft SR + back-link now commit (or roll back) *with* the submit. On failure the SRT stays **Draft** to retry — never approved-without-SR.
+2. **`ensure_linked_sr()`** idempotent self-heal (reused by submit + backfill; never runs for Approved By System).
+3. **Super-Admin list-view relink** — `backfill_missing_sr()` / `get_backfill_candidates()` + `stock_reconciliation_srt_list.js`: a hyperlink column for the linked SR (red "⚠ Missing — relink" on orphans) and a **Relink ERPNext SR** button group ("Scan & Fix All Missing" = empty links; "Fix Selected" = also repairs cancelled/deleted-SR links).
+
+**Posting-date fidelity (user requirement):** a relinked SR inherits the SRT's **original** posting **date and time** (even backdated), never the relink-click time — same `_create_erpnext_sr_draft` path with the `set_posting_time=1` guard. Proven by `tests/test_backfill_relink.py`.
+
+Full writeup + restricted areas: `stock_reconciliation_tracking/doctype/stock_reconciliation_srt/stock_reconciliation_srt.md` § 9b.
+
+---
+
 ## 0. Operating model — IMPORTANT (2026-05-21)
 
 The doc operates on **one item × one warehouse** at a time. The user:

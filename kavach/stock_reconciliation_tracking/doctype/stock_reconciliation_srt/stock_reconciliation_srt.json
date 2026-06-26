@@ -280,9 +280,11 @@
    "fieldname": "linked_erpnext_sr",
    "fieldtype": "Link",
    "options": "Stock Reconciliation",
-   "label": "Linked ERPNext Stock Reconciliation",
+   "label": "Linked ERPNext SR",
    "read_only": 1,
-   "description": "Populated on submit (Draft → Admin Approval). Points at the real ERPNext Stock Reconciliation created in DRAFT by this SRT doc. The ERPNext SR is submitted only when Srt Super Admin moves the workflow to Super Admin Approval."
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Populated on submit (Draft → Admin Approval). Points at the real ERPNext Stock Reconciliation created in DRAFT by this SRT doc. The ERPNext SR is submitted only when Srt Super Admin moves the workflow to Super Admin Approval. Shown as a clickable column in the list view (stock_reconciliation_srt_list.js adds a formatter; an empty value on an admin-approved row renders a red 'Missing — relink' hint). in_standard_filter lets admins filter for blanks to spot orphans."
   },
   {
    "fieldname": "workflow_state",
