@@ -14,36 +14,30 @@
   "column_break_header",
   "item_name",
   "company",
-
   "section_default_uom",
   "default_uom",
   "total_current_stock_in_default_uom",
   "column_break_default_uom",
   "total_qty_found_in_default_uom",
-
   "section_higher_uom",
   "higher_uom",
   "total_current_stock_in_higher_uom",
   "column_break_higher_uom",
   "total_qty_found_in_higher_uom",
   "higher_uom_cf",
-
   "section_posting",
   "edit_posting",
   "posting_date",
   "column_break_posting",
   "posting_time",
-
   "section_batches",
   "batches",
-
   "section_remarks",
   "user_remark",
   "admin_remark",
   "admin_approved_by",
   "super_admin_remark",
   "super_admin_approved_by",
-
   "section_erpnext_link",
   "linked_erpnext_sr",
   "workflow_state",
@@ -103,7 +97,6 @@
    "reqd": 1,
    "description": "Used to resolve the Stock Adjustment account when the real ERPNext Stock Reconciliation is created on submit."
   },
-
   {
    "fieldname": "section_default_uom",
    "fieldtype": "Section Break",
@@ -115,7 +108,7 @@
    "options": "UOM",
    "label": "Default UOM",
    "read_only": 1,
-   "description": "Item.stock_uom — the authoritative UOM that the ERPNext Bin stores qty in. Auto-populated."
+   "description": "Item.stock_uom \u2014 the authoritative UOM that the ERPNext Bin stores qty in. Auto-populated."
   },
   {
    "fieldname": "total_current_stock_in_default_uom",
@@ -135,9 +128,8 @@
    "precision": "3",
    "label": "Total Qty Actually Found (in Default UOM)",
    "read_only": 1,
-   "description": "Σ over all child rows of:  qty_found_in_stock_uom (if qty_found is set on that row) OR  current_stock_in_stock_uom (if qty_found left blank). Recomputed live on any child row edit."
+   "description": "\u03a3 over all child rows of:  qty_found_in_stock_uom (if qty_found is set on that row) OR  current_stock_in_stock_uom (if qty_found left blank). Recomputed live on any child row edit."
   },
-
   {
    "fieldname": "section_higher_uom",
    "fieldtype": "Section Break",
@@ -157,7 +149,7 @@
    "precision": "3",
    "label": "Total Current Stock of Item (in Higher UOM)",
    "read_only": 1,
-   "description": "total_current_stock_in_default_uom ÷ higher_uom_cf."
+   "description": "total_current_stock_in_default_uom \u00f7 higher_uom_cf."
   },
   {
    "fieldname": "column_break_higher_uom",
@@ -169,7 +161,7 @@
    "precision": "3",
    "label": "Total Qty Actually Found (in Higher UOM)",
    "read_only": 1,
-   "description": "total_qty_found_in_default_uom ÷ higher_uom_cf. Recomputed live."
+   "description": "total_qty_found_in_default_uom \u00f7 higher_uom_cf. Recomputed live."
   },
   {
    "fieldname": "higher_uom_cf",
@@ -180,7 +172,6 @@
    "hidden": 1,
    "description": "Internal: conversion factor for higher_uom relative to stock_uom. Hidden helper field."
   },
-
   {
    "fieldname": "section_posting",
    "fieldtype": "Section Break",
@@ -213,7 +204,6 @@
    "reqd": 1,
    "description": "Time-of-day for the SR. Defaults to 'now'."
   },
-
   {
    "fieldname": "section_batches",
    "fieldtype": "Section Break",
@@ -226,7 +216,6 @@
    "label": "Batches",
    "description": "Auto-populated on item change with one row per (batch, warehouse) where current Bin qty > 0. Type a Qty Found on any row to update the parent totals live. Rows where Qty Found is BLANK are excluded from the real ERPNext SR on submit (their current stock is implicitly retained)."
   },
-
   {
    "fieldname": "section_remarks",
    "fieldtype": "Section Break",
@@ -237,13 +226,13 @@
    "fieldname": "user_remark",
    "fieldtype": "Text Editor",
    "label": "User Remark",
-   "description": "Free-form note from the SRT operator (Srt User). Optional. Use to record context — e.g., 'WH 1.9 monthly cycle count, 2026-05-21, scale calibration verified', notable discrepancies seen during the count, batches that physically couldn't be located, etc."
+   "description": "Free-form note from the SRT operator (Srt User). Optional. Use to record context \u2014 e.g., 'WH 1.9 monthly cycle count, 2026-05-21, scale calibration verified', notable discrepancies seen during the count, batches that physically couldn't be located, etc."
   },
   {
    "fieldname": "admin_remark",
    "fieldtype": "Text Editor",
    "label": "Admin Remark",
-   "description": "Free-form note from Srt Admin during the Draft → Admin Approval transition. Optional. Use to record the admin's review verdict — e.g., 'Counts reasonable; approved for ledger posting'."
+   "description": "Free-form note from Srt Admin during the Draft \u2192 Admin Approval transition. Optional. Use to record the admin's review verdict \u2014 e.g., 'Counts reasonable; approved for ledger posting'."
   },
   {
    "fieldname": "admin_approved_by",
@@ -252,14 +241,14 @@
    "label": "Admin Approved By",
    "read_only": 1,
    "in_standard_filter": 1,
-   "description": "Auto-stamped with frappe.session.user when the SRT is submitted (Draft → Admin Approval). Read-only — set by the controller's on_submit hook. Placed directly under Admin Remark for visual pairing."
+   "description": "Auto-stamped with frappe.session.user when the SRT is submitted (Draft \u2192 Admin Approval). Read-only \u2014 set by the controller's on_submit hook. Placed directly under Admin Remark for visual pairing."
   },
   {
    "fieldname": "super_admin_remark",
    "fieldtype": "Text Editor",
    "label": "Super Admin Remark",
    "allow_on_submit": 1,
-   "description": "Free-form note from Srt Super Admin during the Admin Approval → Super Admin Approval transition. Optional. Editable AFTER the SRT is submitted (allow_on_submit=1) because the super admin writes it on a Submitted doc just before clicking 'Submit Linked ERPNext SR'."
+   "description": "Free-form note from Srt Super Admin during the Admin Approval \u2192 Super Admin Approval transition. Optional. Editable AFTER the SRT is submitted (allow_on_submit=1) because the super admin writes it on a Submitted doc just before clicking 'Submit Linked ERPNext SR'."
   },
   {
    "fieldname": "super_admin_approved_by",
@@ -268,7 +257,7 @@
    "label": "Super Admin Approved By",
    "read_only": 1,
    "in_standard_filter": 1,
-   "description": "Auto-stamped with frappe.session.user when the linked ERPNext SR is submitted via submit_linked_sr() (Admin Approval → Super Admin Approval). Read-only — set by the controller. Placed directly under Super Admin Remark for visual pairing."
+   "description": "Auto-stamped with frappe.session.user when the linked ERPNext SR is submitted via submit_linked_sr() (Admin Approval \u2192 Super Admin Approval). Read-only \u2014 set by the controller. Placed directly under Super Admin Remark for visual pairing."
   },
   {
    "fieldname": "section_erpnext_link",
@@ -284,7 +273,7 @@
    "read_only": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "description": "Populated on submit (Draft → Admin Approval). Points at the real ERPNext Stock Reconciliation created in DRAFT by this SRT doc. The ERPNext SR is submitted only when Srt Super Admin moves the workflow to Super Admin Approval. Shown as a clickable column in the list view (stock_reconciliation_srt_list.js adds a formatter; an empty value on an admin-approved row renders a red 'Missing — relink' hint). in_standard_filter lets admins filter for blanks to spot orphans."
+   "description": "Populated on submit (Draft \u2192 Admin Approval). Points at the real ERPNext Stock Reconciliation created in DRAFT by this SRT doc. The ERPNext SR is submitted only when Srt Super Admin moves the workflow to Super Admin Approval. Shown as a clickable column in the list view (stock_reconciliation_srt_list.js adds a formatter; an empty value on an admin-approved row renders a red 'Missing \u2014 relink' hint). in_standard_filter lets admins filter for blanks to spot orphans."
   },
   {
    "fieldname": "workflow_state",
@@ -294,7 +283,7 @@
    "read_only": 1,
    "in_standard_filter": 1,
    "no_copy": 1,
-   "description": "Frappe workflow state. Lifecycle: Draft → Admin Approval (Srt Admin submits, draft ERPNext SR created) → Super Admin Approval (Srt Super Admin submits the ERPNext SR) → Close (cancelled). Managed by the Stock Reconciliation SRT Workflow. NOTE: in_list_view is INTENTIONALLY OMITTED — Frappe's list view auto-renders a colored Status indicator at the start of every row for workflow-enabled doctypes. Adding in_list_view=1 here causes the Status column to appear twice (auto-indicator + explicit column). Keep filter only."
+   "description": "Frappe workflow state. Lifecycle: Draft \u2192 Admin Approval (Srt Admin submits, draft ERPNext SR created) \u2192 Super Admin Approval (Srt Super Admin submits the ERPNext SR) \u2192 Close (cancelled). Managed by the Stock Reconciliation SRT Workflow. NOTE: in_list_view is INTENTIONALLY OMITTED \u2014 Frappe's list view auto-renders a colored Status indicator at the start of every row for workflow-enabled doctypes. Adding in_list_view=1 here causes the Status column to appear twice (auto-indicator + explicit column). Keep filter only."
   },
   {
    "fieldname": "amended_from",
@@ -307,31 +296,64 @@
   }
  ],
  "links": [],
- "modified": "2026-05-21 00:00:00.000000",
+ "modified": "2026-07-08 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "Stock Reconciliation Tracking",
  "name": "Stock Reconciliation SRT",
  "owner": "Administrator",
  "permissions": [
   {
-   "create": 1, "delete": 1, "permlevel": 0, "read": 1,
+   "create": 1,
+   "delete": 1,
+   "permlevel": 0,
+   "read": 1,
    "role": "System Manager",
-   "share": 1, "submit": 1, "cancel": 1, "amend": 1, "write": 1
+   "share": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1,
+   "write": 1,
+   "report": 1
   },
   {
-   "create": 1, "delete": 0, "permlevel": 0, "read": 1,
+   "create": 1,
+   "delete": 0,
+   "permlevel": 0,
+   "read": 1,
    "role": "Srt Super Admin",
-   "share": 1, "submit": 1, "cancel": 1, "amend": 0, "write": 1
+   "share": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 0,
+   "write": 1,
+   "report": 1
   },
   {
-   "create": 1, "delete": 0, "permlevel": 0, "read": 1,
+   "create": 1,
+   "delete": 0,
+   "permlevel": 0,
+   "read": 1,
    "role": "Srt Admin",
-   "share": 1, "submit": 1, "cancel": 1, "amend": 0, "write": 1
+   "share": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 0,
+   "write": 1,
+   "report": 1
   },
   {
-   "create": 1, "delete": 0, "if_owner": 1, "permlevel": 0, "read": 1,
+   "create": 1,
+   "delete": 0,
+   "if_owner": 1,
+   "permlevel": 0,
+   "read": 1,
    "role": "Srt User",
-   "share": 0, "submit": 0, "cancel": 0, "amend": 0, "write": 1
+   "share": 0,
+   "submit": 0,
+   "cancel": 0,
+   "amend": 0,
+   "write": 1,
+   "report": 1
   }
  ],
  "sort_field": "modified",

@@ -2,8 +2,21 @@
 
 **Built:** 2026-07-08 (user spec + column screenshot) · **Grain:** one row per
 **Item Group** · **ref_doctype:** Stock Reconciliation SRT ·
-**Roles:** Srt User/Admin/Super Admin, Stock User/Manager, Accounts Manager,
-System Manager · total row ON.
+**Roles:** Srt User / Srt Admin / Srt Super Admin / System Manager (+
+Administrator implicitly) · total row ON.
+
+> **Permission gotcha (fixed 2026-07-08):** a Frappe report ALSO requires the
+> `report` permission on its **ref_doctype** — `query_report.run` checks
+> `frappe.has_permission("Stock Reconciliation SRT", "report")` before the
+> Report doc's own role list even matters. The SRT DocPerm rows originally
+> had read/write/etc. but NOT `report: 1`, so every non-Administrator user
+> (System Manager included) got "you do not have permission". Fix: `report: 1`
+> on all four SRT DocPerm rows. The Report's role list was trimmed to the
+> same four roles — listing roles that can't pass the ref_doctype gate
+> (Stock User etc.) is a lie in the UI. Srt User's row is `if_owner` for
+> DOCUMENT access, but this Script Report aggregates ALL SRTs — by user
+> spec ("srt user, admin, super admin all can access"), an Srt User sees
+> group-level counts of everyone's SRTs here.
 
 Answers "how far has the stock audit progressed, group by group?" — item
 coverage, SRT activity in a window, approval pipeline, and what the group is
@@ -83,3 +96,8 @@ button POST returns 200 with the binary.
 `srt_item_group_summary.py` (execute + export_xlsx — header carries the full
 decision log) · `.js` (filters + Excel (Formatted) button) · `.json` (Report
 doc, add_total_row=1) · this `.md`.
+
+**Workspace placement (2026-07-08):** the report is wired into THREE surfaces,
+all in git — `workspace/kavach/kavach.json` (Reports card link + shortcut
+chip + content block; all three parts must change together) and
+`workspace_sidebar/kavach.json` (app sidebar item). Synced to DB on migrate.

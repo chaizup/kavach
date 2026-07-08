@@ -1,7 +1,7 @@
 {
  "app": "kavach",
  "charts": [],
- "content": "[{\"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\">\\ud83d\\udee1\\ufe0f Kavach \\u2014 Stock Reconciliation</span>\", \"level\": 3, \"col\": 12}}, {\"type\": \"paragraph\", \"data\": {\"text\": \"Count \\u2192 audit \\u2192 approve. An ERPNext Stock Reconciliation wrapper with batch auto-populate + cost analytics.\", \"col\": 12}}, {\"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"type\": \"header\", \"data\": {\"text\": \"Shortcuts\", \"level\": 4, \"col\": 12}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SRT Dashboard\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Stock Reconciliation SRT\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SRT Settings\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"WO Consumption Cost Analysis\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Batch Moving Costing vs Origin\", \"col\": 3}}, {\"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"type\": \"card\", \"data\": {\"card_name\": \"Stock Reconciliation\", \"col\": 4}}, {\"type\": \"card\", \"data\": {\"card_name\": \"Reports\", \"col\": 4}}, {\"type\": \"card\", \"data\": {\"card_name\": \"Setup\", \"col\": 4}}]",
+ "content": "[{\"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\">\\ud83d\\udee1\\ufe0f Kavach \\u2014 Stock Reconciliation</span>\", \"level\": 3, \"col\": 12}}, {\"type\": \"paragraph\", \"data\": {\"text\": \"Count \\u2192 audit \\u2192 approve. An ERPNext Stock Reconciliation wrapper with batch auto-populate + cost analytics.\", \"col\": 12}}, {\"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"type\": \"header\", \"data\": {\"text\": \"Shortcuts\", \"level\": 4, \"col\": 12}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SRT Dashboard\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Stock Reconciliation SRT\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SRT Settings\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"WO Consumption Cost Analysis\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Batch Moving Costing vs Origin\", \"col\": 3}}, {\"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SRT Item Group Summary\", \"col\": 3}}, {\"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"type\": \"card\", \"data\": {\"card_name\": \"Stock Reconciliation\", \"col\": 4}}, {\"type\": \"card\", \"data\": {\"card_name\": \"Reports\", \"col\": 4}}, {\"type\": \"card\", \"data\": {\"card_name\": \"Setup\", \"col\": 4}}]",
  "creation": "2026-05-21 09:23:33.049749",
  "custom_blocks": [],
  "docstatus": 0,
@@ -68,6 +68,18 @@
   },
   {
    "hidden": 0,
+   "is_query_report": 1,
+   "label": "SRT Item Group Summary",
+   "link_count": 0,
+   "link_to": "SRT Item Group Summary",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link",
+   "icon": "dashboard",
+   "description": "Item-group audit coverage: counted vs pending items, approval pipeline, stock valuation"
+  },
+  {
+   "hidden": 0,
    "is_query_report": 0,
    "label": "Setup",
    "link_count": 2,
@@ -96,7 +108,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-06-20 16:00:00.000000",
+ "modified": "2026-07-08 09:30:00.000000",
  "modified_by": "Administrator",
  "module": "Stock Reconciliation Tracking",
  "name": "Kavach",
@@ -147,6 +159,16 @@
    "icon": "dashboard",
    "label": "Batch Moving Costing vs Origin",
    "link_to": "Batch Moving Costing vs Origin Analysis",
+   "restrict_to_domain": "",
+   "stats_filter": "",
+   "type": "Report"
+  },
+  {
+   "color": "#0d9488",
+   "doc_view": "",
+   "icon": "dashboard",
+   "label": "SRT Item Group Summary",
+   "link_to": "SRT Item Group Summary",
    "restrict_to_domain": "",
    "stats_filter": "",
    "type": "Report"

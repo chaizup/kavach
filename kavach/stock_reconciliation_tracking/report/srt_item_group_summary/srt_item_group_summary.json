@@ -10,7 +10,7 @@
  "idx": 0,
  "is_standard": "Yes",
  "letterhead": null,
- "modified": "2026-07-08 07:00:00.000000",
+ "modified": "2026-07-08 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "Stock Reconciliation Tracking",
  "name": "SRT Item Group Summary",
@@ -29,15 +29,6 @@
   },
   {
    "role": "Srt Super Admin"
-  },
-  {
-   "role": "Stock Manager"
-  },
-  {
-   "role": "Stock User"
-  },
-  {
-   "role": "Accounts Manager"
   },
   {
    "role": "System Manager"
