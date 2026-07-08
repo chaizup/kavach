@@ -128,6 +128,7 @@ See top-of-file comment in `stock_reconciliation_srt.py`. Hot list:
 - **`_enforce_no_duplicate_open_srt_for_item`'s COMPLETED_STATES tuple** — kept narrow on purpose. Adding "Admin Approval" would let users start a new SRT while the prior's ERPNext SR is still draft, risking parallel-write races on the same item.
 - **`_classify_zero_delta_ticks` epsilon = 0.001** — matches the field's `precision=3`. Don't tighten below 0.001; would force users to perceive sub-displayable diffs.
 - **SABB monkey-patches in `submit_linked_sr`** — required for legitimate reconciliations to submit (per Quirk #2). Always apply inside try/finally so the site is restored on any error.
+- **Late-approval guard call order (2026-07-07)** — `_validate_late_approval_negative_batch(sr)` MUST stay the first thing after the docstatus checks in `submit_linked_sr`, BEFORE `_apply_validation_patches` and the allow-negative toggles. The patches exist to disarm ERPNext's checks; the guard is the only thing standing between a late approval and a silent negative batch. A guard throw must leave zero side effects (no toggles, no commits). See § 9c.
 - **`Stock Settings.allow_negative_stock` toggle** — same try/finally pattern; never leave it in the toggled state across requests.
 - **`_route_to_system_approved` uses db_set with `update_modified=False`** — calling `self.save()` here would re-run validate which would reject the cross-role remark writes via `_enforce_remark_field_permissions`.
 - **`autoname` = naming_series** — don't change to `field:` style or autoincrement; the SRT-RECO prefix is on print and audit logs.
@@ -177,6 +178,60 @@ done
 - Do NOT re-introduce `frappe.db.commit()` inside `on_submit` / `ensure_linked_sr` / `_create_erpnext_sr_draft` — it breaks atomicity and resurrects the orphan bug.
 - Do NOT backfill **Approved By System** SRTs (no delta to post). Keep them in `_BACKFILL_EXCLUDED_STATES`.
 - Do NOT build the relink SR with `nowdate()/nowtime()` — always route through `ensure_linked_sr → _create_erpnext_sr_draft` so the operator's posting timestamp is preserved.
+
+## 9c. Late-Approval Guard — no negative batch from a backdated approval (2026-07-07)
+
+**User spec:** if the Super Admin approves an SRT *late* and stock consumed in
+the meantime would drive a reconciled batch **negative**, the approval must be
+**restricted** with an alert naming **which batch** and **how many qty were
+over-consumed** vs the SRT count of the past posting date.
+
+**Why it can happen:** the linked SR posts **back-dated** at the SRT's posting
+datetime (§ 8 set_posting_time). Ledger math after a backdated SR:
+`balance(now) = counted_qty + net_movement_after(posting_dt)`. Counted 10 on
+day 1, 12 consumed by day 5 → −2. And `submit_linked_sr` deliberately disarms
+ERPNext's negative validators (Quirk #2 monkey-patches + allow-negative
+toggles), so without a guard the negative posts **silently**.
+
+**The guard** (`_validate_late_approval_negative_batch`, called first thing in
+`submit_linked_sr`):
+- Iterates the **linked SR's rows** (what will actually post — item_code,
+  warehouse, batch_no, qty in stock UOM).
+- Per row: `net_since = _net_batch_movement_since(...)` — signed SLE sum
+  strictly `>` the posting timestamp, over BOTH batch ledgers (SBE ⋈
+  non-cancelled SLE bundle branch + legacy `SLE.batch_no` branch — same dual
+  pattern as `api.get_batch_current_state`, whose as-of snapshot uses `<=`,
+  so no SLE is ever double-counted).
+- `projected = qty + net_since < −0.0005` → violation. One aggregated throw:
+  batch, item @ warehouse, counted qty, net consumed after the count,
+  projected negative balance, **over-consumed qty** (the deficit).
+- Tolerance 0.0005 = half the app's 0.001 batch-qty noise floor.
+
+**Interplay with the CEV freeze** (`custom_erp_validation.freeze_on_open_srt`,
+ON on dev.localhost): the freeze blocks SE/DN/Pick List while the SRT is open,
+which *reduces* this race — but can't eliminate it (flag can be off, freeze
+doesn't cover every voucher type, movements may predate the freeze). The guard
+is the backstop at the last exit.
+
+**Verified live (dev.localhost 2026-07-07, all writes rolled back):** real
+pending case SRT-RECO-2026-00317 (posted 2026-07-01, still at Admin Approval
+six days later — the race in the wild): clean data passes; a synthetic
+post-count consumption SLE flips the guard → throw names batch
+2APR-CZMAT/563-33 with over-consumed 5.0; rollback verified clean. 7/7 checks.
+
+**UI-verified (dev.localhost 2026-07-08, post-reboot healthy stack):** full
+browser flow as Administrator — SRT-RECO-2026-00317 form → primary button
+"Submit Linked ERPNext SR" → Confirm → server call. With a committed synthetic
+post-count consumption (−777 legacy-branch SLE dated after the 2026-07-01
+count) the red modal **"Batch Over-Consumed Since Count"** appeared naming
+batch 2APR-CZMAT/563-33: counted 0.0, net 777.0 consumed after the count →
+projected −777.0, over-consumed 777.0, plus the back-dated posting timestamp
+and fix guidance. SR MAT-RECO-2026-03099 stayed draft, SRT stayed at Admin
+Approval, synthetic row deleted after (0 residue).
+
+**RESTRICT (new):** keep the guard call before the patches/toggles; keep the
+strict-`>` timestamp comparison; keep the 0.0005 tolerance; no role bypass and
+no settings switch without an explicit user decision.
 
 ## 10. Sync block
 

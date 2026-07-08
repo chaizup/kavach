@@ -59,6 +59,14 @@
 #   - Don't auto-submit the SR with `sr.submit()` alone — Quirk #2 says
 #     `validate_negative_qty_in_future_sle` swallows the throw and leaves
 #     docstatus=0. Use `sr._submit()` (low-level) and assert post-commit.
+#   - submit_linked_sr() runs the LATE-APPROVAL GUARD (2026-07-07) FIRST:
+#     because the SR posts back-dated AND the submit deliberately disarms
+#     ERPNext's negative validators, a Super Admin approving late could
+#     silently sink a counted batch below zero (counted 10 on day 1,
+#     12 consumed by day 5 → −2). The guard blocks the approval and lists
+#     every batch + over-consumed qty. See
+#     _validate_late_approval_negative_batch — its RESTRICT block before
+#     touching anything in that path.
 #   - The `is_counted` field is USER-CONTROLLED via the "Do Reconcile"
 #     checkbox in the grid's first column. Per 2026-05-21 spec, default
 #     is UNCHECKED — qty_found is IGNORED on unchecked rows; the batch
@@ -1030,6 +1038,16 @@ class StockReconciliationSRT(Document):
         if sr.docstatus == 2:
             frappe.throw(_("ERPNext SR {0} is cancelled — cannot submit.").format(sr.name))
 
+        # LATE-APPROVAL GUARD (2026-07-07) — MUST run before the validator
+        # monkey-patches and the allow-negative toggles below. Those exist to
+        # let LEGITIMATE reconciliations through Quirk #2; they also mean a
+        # late Super Admin approval that would sink a counted batch negative
+        # would post SILENTLY. Guard first, disarm validators second.
+        # RESTRICT: do NOT move this call inside the try/finally — the
+        # finally block commits, and a guard throw must leave NOTHING
+        # committed (no settings toggles, no patches, no SR submit).
+        self._validate_late_approval_negative_batch(sr)
+
         self._apply_validation_patches()
         old_neg = frappe.db.get_single_value("Stock Settings", "allow_negative_stock")
         old_neg_batch = frappe.db.get_single_value("Stock Settings", "allow_negative_stock_for_batch")
@@ -1056,6 +1074,125 @@ class StockReconciliationSRT(Document):
             frappe.db.set_single_value("Stock Settings", "allow_negative_stock", old_neg or 0)
             frappe.db.set_single_value("Stock Settings", "allow_negative_stock_for_batch", old_neg_batch or 0)
             frappe.db.commit()
+
+    # ------------------------------------------------------------------
+    # LATE-APPROVAL GUARD (2026-07-07)
+    # ------------------------------------------------------------------
+    # CONTEXT: the linked SR posts BACKDATED at the SRT's posting datetime
+    #   (set_posting_time=1 — see _create_erpnext_sr_draft). Ledger math
+    #   after a backdated SR: the batch balance at the posting moment is
+    #   REPLACED by the counted qty, and every SLE AFTER that moment
+    #   re-applies on top. So:
+    #       balance(now) = counted_qty + net_movement_after(posting_dt)
+    #   If the Super Admin approves LATE and consumption in the gap
+    #   exceeds the counted qty, that balance is NEGATIVE — the approval
+    #   itself sinks the very batch that was just reconciled. And because
+    #   submit_linked_sr disarms ERPNext's negative validators (Quirk #2,
+    #   deliberately), it would post SILENTLY. This guard blocks the
+    #   approval and names every batch + the over-consumed qty.
+    #
+    # INSTRUCTIONS:
+    #   - Reads the LINKED SR's rows (item_code, warehouse, batch_no,
+    #     qty in stock UOM) — the rows that will actually post — not the
+    #     SRT child table.
+    #   - Movement since posting is summed over BOTH batch ledgers, same
+    #     dual pattern as api.get_batch_current_state: bundle branch
+    #     (SBE ⋈ non-cancelled SLE — this site's only real branch, see
+    #     kavach.md SABB quirk) + legacy SLE.batch_no branch.
+    #   - Strict `>` posting timestamp: the count snapshot used `<=`
+    #     (api._as_of_clause), so the two never double-count an SLE.
+    #   - The CEV freeze gate (custom_erp_validation, freeze_on_open_srt)
+    #     REDUCES this race but cannot eliminate it: it only covers
+    #     SE / DN / Pick List, the flag can be off, and historical
+    #     movements may predate the freeze. This guard is the backstop
+    #     at the last exit.
+    #
+    # RESTRICT:
+    #   - Tolerance stays at 0.0005 (half of the 0.001 the app already
+    #     uses as batch-qty noise floor). Do not tighten to == 0: float
+    #     ledger noise would block legitimate approvals.
+    #   - Do NOT add a role bypass or a settings switch here without an
+    #     explicit user decision — "approval restricted" is the spec.
+    #   - A guard throw must stay side-effect-free: keep the call in
+    #     submit_linked_sr BEFORE _apply_validation_patches and the
+    #     Stock Settings toggles.
+    # ------------------------------------------------------------------
+    def _validate_late_approval_negative_batch(self, sr):
+        """Block a late Super Admin approval that would drive any
+        reconciled batch negative. Throws one aggregated error listing
+        batch, counted qty, net movement since the posting datetime, the
+        projected balance and the over-consumed qty."""
+        violations = []
+        for row in sr.get("items") or []:
+            if not row.get("batch_no") or not row.get("warehouse"):
+                continue
+            net_since = self._net_batch_movement_since(
+                row.item_code, row.batch_no, row.warehouse,
+                sr.posting_date, sr.posting_time,
+            )
+            projected = flt(row.qty) + net_since
+            if projected < -0.0005:
+                deficit = flt(-projected, 4)
+                violations.append(_(
+                    "Batch <b>{0}</b> ({1} @ {2}) — counted <b>{3}</b>, "
+                    "net <b>{4}</b> consumed after the count → balance "
+                    "would become <b>{5}</b> (over-consumed by <b>{6}</b> "
+                    "vs the SRT count)"
+                ).format(
+                    row.batch_no, row.item_code, row.warehouse,
+                    flt(row.qty, 4), flt(-net_since, 4),
+                    flt(projected, 4), deficit,
+                ))
+        if violations:
+            frappe.throw(
+                _("Super Admin approval blocked — this SR posts back-dated "
+                  "at <b>{0} {1}</b>, and stock consumed AFTER the count "
+                  "would drive these reconciled batches NEGATIVE:").format(
+                    sr.posting_date, sr.posting_time)
+                + "<br><br>&bull; "
+                + "<br>&bull; ".join(violations)
+                + "<br><br>"
+                + _("Fix: reverse/adjust the post-count consumption, or "
+                    "cancel this SRT and recount with a fresh posting "
+                    "date. Approving anyway would post a silent negative "
+                    "(the SR submit disarms ERPNext's own checks)."),
+                title=_("Batch Over-Consumed Since Count"),
+            )
+
+    @staticmethod
+    def _net_batch_movement_since(item_code, batch_no, warehouse,
+                                  posting_date, posting_time):
+        """Signed SUM of all ledger movement for (item, batch, warehouse)
+        strictly AFTER the posting datetime — bundle branch + legacy
+        branch (dual batch ledger, same as api.get_batch_current_state)."""
+        params = {
+            "item": item_code, "batch": batch_no, "wh": warehouse,
+            "pd": posting_date, "pt": posting_time,
+        }
+        bundle = frappe.db.sql("""
+            SELECT IFNULL(SUM(sbe.qty), 0)
+            FROM `tabSerial and Batch Entry` sbe
+            JOIN `tabStock Ledger Entry` sle
+                 ON sle.serial_and_batch_bundle = sbe.parent
+            WHERE sbe.batch_no = %(batch)s
+              AND sle.item_code = %(item)s
+              AND sle.warehouse = %(wh)s
+              AND sle.is_cancelled = 0
+              AND TIMESTAMP(sle.posting_date, sle.posting_time)
+                  > TIMESTAMP(%(pd)s, %(pt)s)
+        """, params)[0][0]
+        legacy = frappe.db.sql("""
+            SELECT IFNULL(SUM(sle.actual_qty), 0)
+            FROM `tabStock Ledger Entry` sle
+            WHERE sle.batch_no = %(batch)s
+              AND sle.item_code = %(item)s
+              AND sle.warehouse = %(wh)s
+              AND sle.is_cancelled = 0
+              AND IFNULL(sle.serial_and_batch_bundle, '') = ''
+              AND TIMESTAMP(sle.posting_date, sle.posting_time)
+                  > TIMESTAMP(%(pd)s, %(pt)s)
+        """, params)[0][0]
+        return flt(bundle) + flt(legacy)
 
     def _can_submit_linked_sr(self):
         if frappe.session.user == "Administrator":

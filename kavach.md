@@ -2002,3 +2002,29 @@ LAST EDIT  2026-05-21 — v0.0.1
                 - Batch Number child column widened to 3 (Frappe grid cap = 10;
                   reshuffled current_stock_in_stock_uom to 1 to keep total ≤ 10).
 ```
+
+---
+
+## 2026-07-07 — Late-Approval Guard (negative batch from backdated approval)
+
+**Spec:** Super Admin approving an SRT late must be BLOCKED if consumption
+since the count would drive a reconciled batch negative — alert names the
+batch and the over-consumed qty vs the SRT count.
+
+**Where:** `submit_linked_sr()` → `_validate_late_approval_negative_batch(sr)`
+runs FIRST (before the Quirk-#2 monkey-patches and allow-negative toggles
+that would otherwise let the negative post silently). Math:
+`balance(now) = counted + net_movement_after(posting_dt)`; movement summed
+over both batch ledgers (SBE ⋈ SLE + legacy batch_no), strict `>` posting
+timestamp (count snapshot used `<=` — no double count). Tolerance 0.0005.
+No role bypass. Backfill path is unaffected: it always routes back through
+the same button, so the guard is a single choke point.
+
+**Verified live 2026-07-07** (rolled back): real pending SRT-RECO-2026-00317
+(posted 2026-07-01, awaiting super admin 6 days) — clean pass; synthetic
+post-count over-consumption → blocked naming batch 2APR-CZMAT/563-33,
+over-consumed 5.0. 7/7 checks.
+
+Full insight: `doctype/stock_reconciliation_srt/stock_reconciliation_srt.md`
+§ 9c. Related: the CEV freeze gate (custom_erp_validation) reduces but cannot
+eliminate this race — the guard is the backstop.
