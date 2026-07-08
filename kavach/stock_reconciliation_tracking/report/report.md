@@ -15,12 +15,18 @@ report/
 │   ├── work_order_consumption_cost_analysis.py
 │   ├── work_order_consumption_cost_analysis.js
 │   └── work_order_consumption_cost_analysis.md
-└── batch_moving_costing_vs_origin_analysis/    ← Script Report
+├── batch_moving_costing_vs_origin_analysis/    ← Script Report
+│   ├── __init__.py
+│   ├── batch_moving_costing_vs_origin_analysis.json
+│   ├── batch_moving_costing_vs_origin_analysis.py
+│   ├── batch_moving_costing_vs_origin_analysis.js
+│   └── batch_moving_costing_vs_origin_analysis.md
+└── srt_item_group_summary/                     ← Script Report (2026-07-08)
     ├── __init__.py
-    ├── batch_moving_costing_vs_origin_analysis.json
-    ├── batch_moving_costing_vs_origin_analysis.py
-    ├── batch_moving_costing_vs_origin_analysis.js
-    └── batch_moving_costing_vs_origin_analysis.md
+    ├── srt_item_group_summary.json
+    ├── srt_item_group_summary.py
+    ├── srt_item_group_summary.js
+    └── srt_item_group_summary.md
 ```
 
 ## Reports
@@ -29,6 +35,7 @@ report/
 |--------|------|-------------|--------------|
 | **Work Order Consumption Cost Analysis** | Script Report | Work Order | Per-batch consumption cost + batch-origin traceability for every Manufacture Stock Entry of a Work Order. See its `.md`. |
 | **Batch Moving Costing vs Origin Analysis** | Script Report | Batch | Per-batch inward vs outward valuation with a **Rate Match** verdict (cost drift) + batch origin. See its `.md`. |
+| **SRT Item Group Summary** | Script Report | Stock Reconciliation SRT | Audit-coverage dashboard at ITEM GROUP grain: item master counts, SRT counts in a **creation-time** window, approval-state buckets (pending predicate = srt_freeze's docstatus-first rule), current `Bin.stock_value` valuation. Warehouse + Item Group MultiSelect. See its `.md`. |
 
 ## Conventions (read before adding a report here)
 
